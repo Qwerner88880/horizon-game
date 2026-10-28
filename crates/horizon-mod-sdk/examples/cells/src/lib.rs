@@ -4,11 +4,12 @@
 //! fill or drain. A cell charges itself each tick, shares its energy with the
 //! cells beside it, and keeps it in the world's save; breaking one says what
 //! was lost. `/cell [pos]` reads the cell under the player (or at `pos`);
-//! `/cellgui [pos]` opens its menu (capability `menus`): its charge, kept up
-//! to date, and buttons to drain or fill it.
+//! `/cellgui [pos]`, or a right click on the cell, opens its menu
+//! (capability `menus`): its charge, kept up to date, and buttons to drain
+//! or fill it.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, MenuItem, Player, Registration, ServerMod, block_entities, energy,
-    menus, players,
+    Args, Argument, BlockEntity, MenuItem, Player, Registration, ServerMod, UsedBlock,
+    block_entities, energy, menus, players,
 };
 use std::collections::BTreeMap;
 
@@ -121,6 +122,14 @@ impl ServerMod for Cells {
         vec![CELL.into()]
     }
 
+    fn block_uses() -> Vec<String> {
+        vec![CELL.into()]
+    }
+
+    fn block_used(&mut self, player: &Player, b: &UsedBlock) {
+        let _ = self.open_menu(player, &b.dimension, b.x, b.y, b.z);
+    }
+
     fn block_entity_tick(&mut self, tick: u64, entities: &[BlockEntity]) {
         // Cells share only within a dimension.
         let mut dimensions: BTreeMap<&str, BTreeMap<(i32, i32, i32), u64>> = BTreeMap::new();
@@ -185,9 +194,7 @@ impl ServerMod for Cells {
         let d = &player.dimension;
         block_entities::get(d, x, y, z).ok_or("No cell there")?;
         if name == "cellgui" {
-            let title = format!("Energy Cell {x} {y} {z}");
-            menus::open(&player.id, "cell", &title, 3, &view(stored(d, x, y, z)))?;
-            self.open.insert(player.id.clone(), (d.clone(), x, y, z));
+            self.open_menu(player, d, x, y, z)?;
             return Ok(None);
         }
         Ok(Some(format!(
@@ -217,6 +224,23 @@ impl ServerMod for Cells {
 
     fn menu_closed(&mut self, player: &Player, _menu: &str) {
         self.open.remove(&player.id);
+    }
+}
+
+impl Cells {
+    /// Opens the menu of the cell at a position for `player`.
+    fn open_menu(
+        &mut self,
+        player: &Player,
+        d: &str,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Result<(), String> {
+        let title = format!("Energy Cell {x} {y} {z}");
+        menus::open(&player.id, "cell", &title, 3, &view(stored(d, x, y, z)))?;
+        self.open.insert(player.id.clone(), (d.to_owned(), x, y, z));
+        Ok(())
     }
 }
 

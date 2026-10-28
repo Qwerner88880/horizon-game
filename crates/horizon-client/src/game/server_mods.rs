@@ -40,6 +40,9 @@ pub(super) enum ModEvent {
     MenuClick(Who, String, String, u32, u8, bool),
     /// A mod's menu closed by its player.
     MenuClosed(Who, String, String),
+    /// A player used a block a mod takes the use of: the mod, the position
+    /// and the block.
+    BlockUse(Who, String, [i32; 3], String),
     Block {
         who: Who,
         pos: [i32; 3],
@@ -75,6 +78,9 @@ impl Game<'_> {
         false
     }
     pub(super) fn lan_mod_menu_closed(&mut self, _conn: u32, _window: i32) -> bool {
+        false
+    }
+    pub(super) fn mod_block_use(&mut self, _pos: [i32; 3]) -> bool {
         false
     }
 }
@@ -328,6 +334,14 @@ mod run {
                     ModEvent::MenuClosed(w, mod_id, menu) => {
                         if let Some(p) = who(&w) {
                             self.mods.mods.menu_closed(&mod_id, &p, &menu);
+                        }
+                    }
+                    ModEvent::BlockUse(w, mod_id, pos, state) => {
+                        if let Some(p) = who(&w) {
+                            let dimension = p.dimension.clone();
+                            self.mods
+                                .mods
+                                .block_used(&mod_id, &p, &dimension, pos, &state);
                         }
                     }
                     ModEvent::Block {
@@ -598,6 +612,32 @@ mod run {
                 self.mods.events.push(event);
             }
             true
+        }
+
+        /// The acting player uses the block at `pos` with the main hand: true
+        /// when a server mod takes the use of it (the mod hears it at the
+        /// tick's end, and the game does nothing else with the click).
+        pub(in crate::game) fn mod_block_use(&mut self, pos: [i32; 3]) -> bool {
+            if !self.hears_players() {
+                return false;
+            }
+            let claims = self.mods.mods.block_use_claims();
+            if claims.is_empty() {
+                return false;
+            }
+            let state = self.state_string(self.world.block(pos[0], pos[1], pos[2]));
+            let name = horizon_mods::block_entities::block_name(&state).to_owned();
+            let who = || self.lan_acting.map_or(Who::Local, Who::Conn);
+            let takers: Vec<String> = claims
+                .into_iter()
+                .filter(|(_, blocks)| blocks.contains(&name))
+                .map(|(id, _)| id)
+                .collect();
+            for id in &takers {
+                let event = ModEvent::BlockUse(who(), id.clone(), pos, state.clone());
+                self.mods.events.push(event);
+            }
+            !takers.is_empty()
         }
 
         /// A chat message a player sent.

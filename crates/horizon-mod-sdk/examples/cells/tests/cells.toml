@@ -28,6 +28,25 @@ click = { menu = "cell", slot = 0 }
 command = "cell"
 expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
 
+# Close, then a right click on the cell opens its menu again: Fill works
+# only in an open menu.
+[[step]]
+click = { menu = "cell", slot = 22 }
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+[[step]]
+use = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+click = { menu = "cell", slot = 15 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1100 / 100000 FE"
+
+[[step]]
+click = { menu = "cell", slot = 11 }
+
 [[step]]
 command = "cellgui 5 63 5"
 expect.error = "No cell there"

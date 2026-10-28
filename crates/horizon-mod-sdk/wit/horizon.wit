@@ -783,6 +783,32 @@ interface menu-events {
     closed: func(player: player, menu: string);
 }
 
+/// What the server calls in a server mod with capability `block-entities`
+/// that takes players' clicks on its blocks. A server mod built before it
+/// has no such export: its blocks keep vanilla's use.
+interface block-use-events {
+    use players.{player};
+    record used-block {
+        /// `minecraft:overworld`, ...
+        dimension: string,
+        x: s32,
+        y: s32,
+        z: s32,
+        /// The block, as `minecraft:oak_log[axis=y]`.
+        state: string,
+        /// The mod's data on it (`block-entities`).
+        data: list<u8>,
+    }
+    /// Once, after `block-entity-events.blocks`: those of its claimed blocks
+    /// whose use (a right click) the mod takes. A click on one does nothing
+    /// else in the game (no vanilla use, no block placed against it), but a
+    /// sneaking player with an item in hand places or uses it as vanilla
+    /// does.
+    uses: func() -> list<string>;
+    /// The player used one of those blocks, with the main hand.
+    used: func(player: player, block: used-block);
+}
+
 /// What the server calls in a server mod with capability `block-entities`.
 /// A server mod built before it has no such export and keeps working.
 interface block-entity-events {
@@ -933,6 +959,7 @@ world horizon-block-mod {
     import menus;
     export block-entity-events;
     export menu-events;
+    export block-use-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -940,6 +967,13 @@ world block-entity-host {
     import block-entities;
     import energy;
     export block-entity-events;
+}
+
+/// The game's side of `block-use-events`: a world of its own, so server
+/// mods built before it still load.
+world use-host {
+    import players;
+    export block-use-events;
 }
 
 /// The game's side of capability `menus`: a world of its own, so server

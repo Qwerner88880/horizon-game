@@ -93,7 +93,19 @@ mod menu_bindings {
     });
 }
 pub use menu_bindings::horizon::mods::menus::MenuItem;
+/// `block-use-events`' world: its own, so server mods built before it
+/// still load. `players` is the server world's.
+mod use_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "use-host",
+        with: {
+            "horizon:mods/players": super::server_bindings::horizon::mods::players,
+        },
+    });
+}
 use menu_bindings::{MenuHost, horizon::mods::menus};
+use use_bindings::{UseHost, exports::horizon::mods::block_use_events::UsedBlock};
 /// Rows a menu may have, and so its slots.
 const MENU_ROWS: u32 = 6;
 /// Claimed blocks a mod may list (`block-entity-events.blocks`).
@@ -375,6 +387,8 @@ struct Running {
     blocks: Option<(BlockEntityHost, Vec<String>)>,
     /// Capability `menus`: the `menu-events` export.
     menus: Option<MenuHost>,
+    /// `block-use-events` and the claimed blocks whose use the mod takes.
+    uses: Option<(UseHost, Vec<String>)>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -602,6 +616,63 @@ impl Mods {
                 });
             }
         }
+    }
+    /// Each running mod taking the use of some of its blocks: its id and
+    /// those blocks.
+    pub fn block_use_claims(&self) -> Vec<(String, Vec<String>)> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let run = e.run.as_ref()?;
+                let (_, blocks) = run.uses.as_ref()?;
+                Some((run.store.data().id.clone(), blocks.clone()))
+            })
+            .collect()
+    }
+    /// `player` used block `state` at `pos` in `dimension`, one mod
+    /// `mod_id` takes the use of: its block entity there (made now if it has
+    /// none, a block placed before the mod ran) goes to `used`. Needs the
+    /// store lent.
+    pub fn block_used(
+        &mut self,
+        mod_id: &str,
+        player: &ServerPlayer,
+        dimension: &str,
+        pos: [i32; 3],
+        state: &str,
+    ) {
+        let Some(i) = self.running_index(mod_id) else {
+            return;
+        };
+        let key = (dimension.to_owned(), pos);
+        let data = {
+            let Ok(mut slot) = self.entities.lock() else {
+                return;
+            };
+            let Some(store) = slot.as_mut() else {
+                return;
+            };
+            store.create(mod_id, key.clone());
+            store
+                .get(mod_id, &key)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default()
+        };
+        let block = UsedBlock {
+            dimension: dimension.to_owned(),
+            x: pos[0],
+            y: pos[1],
+            z: pos[2],
+            state: state.to_owned(),
+            data,
+        };
+        self.call(i, FUEL_EVENT, |run| match &run.uses {
+            Some((h, _)) => {
+                h.horizon_mods_block_use_events()
+                    .call_used(&mut run.store, player, &block)
+            }
+            None => Ok(()),
+        });
     }
     /// `player` clicked slot `slot` of mod `mod_id`'s menu `menu`.
     pub fn menu_clicked(
@@ -914,6 +985,22 @@ impl Mods {
                 blocks = Some((host, claimed));
             }
         }
+        // `block-use-events`: among the claimed blocks, those it takes the
+        // use of.
+        let mut uses = None;
+        if let Some((_, claimed)) = &blocks
+            && let Ok(host) = UseHost::new(&mut store, &instance)
+        {
+            store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+            let mut taken = host
+                .horizon_mods_block_use_events()
+                .call_uses(&mut store)
+                .map_err(|e| reason(&e))?;
+            taken.retain(|b| claimed.contains(b));
+            if !taken.is_empty() {
+                uses = Some((host, taken));
+            }
+        }
         let menus = match server && m.capabilities.contains(&crate::Capability::Menus) {
             true => MenuHost::new(&mut store, &instance).ok(),
             false => None,
@@ -928,6 +1015,7 @@ impl Mods {
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
             blocks,
             menus,
+            uses,
         }))
     }
 

@@ -42,7 +42,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
 - Imports (what the game offers): `block-entities`, `energy`, `menus`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `server-events`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -50,6 +50,13 @@ The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
 
 - Imports (what the game offers): `block-entities`, `energy`
 - Exports (what the mod provides): `block-entity-events`
+
+## World `use-host`
+
+The game's side of `block-use-events`: a world of its own, so server mods built before it still load.
+
+- Imports (what the game offers): `players`
+- Exports (what the mod provides): `block-use-events`
 
 ## World `menu-host`
 
@@ -781,6 +788,32 @@ What the server calls in a server mod with capability `menus`.
 | --- | --- | --- |
 | `clicked` | `func(player: player, menu: string, slot: u32, button: u8, shift: bool)` | The player clicked slot `slot` of the mod's open menu `menu` (only the menu's own slots, not their inventory's): `button` 0 left, 1 right; `shift` held. The menu shows the mod's items again after it. |
 | `closed` | `func(player: player, menu: string)` | The player closed the mod's menu `menu` (or left the server). |
+
+## `block-use-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `block-entities` that takes players' clicks on its blocks. A server mod built before it has no such export: its blocks keep vanilla's use.
+
+### type `player`
+
+`type player = player`
+
+### record `used-block`
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` | `minecraft:overworld`, ... |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `state` | `string` | The block, as `minecraft:oak_log[axis=y]`. |
+| `data` | `list<u8>` | The mod's data on it (`block-entities`). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `uses` | `func() -> list<string>` | Once, after `block-entity-events.blocks`: those of its claimed blocks whose use (a right click) the mod takes. A click on one does nothing else in the game (no vanilla use, no block placed against it), but a sneaking player with an item in hand places or uses it as vanilla does. |
+| `used` | `func(player: player, block: used-block)` | The player used one of those blocks, with the main hand. |
 
 ## `block-entity-events`
 

@@ -241,6 +241,19 @@ impl TestGame {
         self.snapshot();
         self.mods.server_command(player, line)
     }
+    /// `player` right-clicks `state` at `pos`: a mod taking the use of
+    /// that block hears it (`block-use-events`).
+    pub fn use_block(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
+        self.snapshot();
+        let name = crate::block_entities::block_name(state).to_owned();
+        for (id, blocks) in self.mods.block_use_claims() {
+            if blocks.contains(&name) {
+                let at = [pos.x, pos.y, pos.z];
+                self.mods
+                    .block_used(&id, player, &player.dimension, at, state);
+            }
+        }
+    }
     /// `player` clicks slot `slot` of the mod's menu `menu` (capability
     /// `menus`).
     pub fn menu_click(
@@ -436,7 +449,10 @@ pub struct Step {
     #[serde(rename = "break")]
     broken: Option<BlockSet>,
     place: Option<BlockSet>,
-    /// Server mods: the player clicks the mod's menu, before `command`.
+    /// Server mods: the player right-clicks a block, then clicks the mod's
+    /// menu, before `command`.
+    #[serde(rename = "use")]
+    used: Option<BlockSet>,
     click: Option<ClickSet>,
     /// Blocks of the Overworld before the rest of the step (capability
     /// `world`); every other block is air.
@@ -597,7 +613,8 @@ impl Step {
             || self.command.is_some()
             || self.broken.is_some()
             || self.place.is_some()
-            || self.click.is_some();
+            || self.click.is_some()
+            || self.used.is_some();
         let actor = if server && acts {
             Some(actor(game)?)
         } else {
@@ -623,6 +640,14 @@ impl Step {
                 Some(p) => game.player_chat(p, line),
                 None => game.chat(line),
             }
+        }
+        if let (Some(b), Some(p)) = (&self.used, &who) {
+            let pos = BlockPos {
+                x: b.x,
+                y: b.y,
+                z: b.z,
+            };
+            game.use_block(p, pos, &b.state);
         }
         if let (Some(c), Some(p)) = (&self.click, &who) {
             game.menu_click(p, &c.menu, c.slot, c.button, c.shift);

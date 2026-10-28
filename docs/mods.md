@@ -638,6 +638,19 @@ cell's charge, refreshed twice a second, with buttons to drain and fill it.
 own player in in-frame single player (the default single player, on the
 server thread, has them).
 
+#### Blocks of a mod's own (`block-use-events`)
+
+A server mod with block entities makes its claimed blocks machines of its
+own: `ServerMod::block_uses` names those whose use (a right click) it takes,
+and `block_used(player, block)` hears each, with the block's data. The game
+does nothing else with such a click: no vanilla use, no block placed against
+it; a sneaking player with an item in hand still places or uses it as
+vanilla does. A right click on a `cells` lodestone opens its menu.
+
+New blocks come from a content mod (API 0.2, capability `registries`) that
+a server mod claims: `horizon-forge convert` carries a Java mod's blocks,
+models and textures over as one.
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is

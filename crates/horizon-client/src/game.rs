@@ -4198,6 +4198,11 @@ impl Game<'_> {
         if !(sneaking && hands_full)
             && let Some(hit) = block_hit
         {
+            // A server mod's block: the mod takes the click.
+            if self.hand == Hand::Main && self.mod_block_use(hit.pos) {
+                self.swing_arm();
+                return Ok(true);
+            }
             let held = self.held().cloned();
             if self.use_lectern(hit.pos, held.as_ref()) {
                 self.swing_arm();

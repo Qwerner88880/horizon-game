@@ -195,6 +195,7 @@ pub mod server {
     });
 
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
+    pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
     pub use exports::horizon::mods::menu_events::Guest as __MenuGuest;
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
@@ -259,6 +260,14 @@ pub mod server {
         }
         /// `player` closed the mod's menu `menu`.
         fn menu_closed(&mut self, _player: &Player, _menu: &str) {}
+        /// Among [`ServerMod::block_entity_blocks`], those whose use (a
+        /// right click) the mod takes, in place of vanilla's: asked once.
+        fn block_uses() -> Vec<String> {
+            Vec::new()
+        }
+        /// `player` used (right-clicked) one of the blocks
+        /// [`ServerMod::block_uses`] names.
+        fn block_used(&mut self, _player: &Player, _block: &UsedBlock) {}
     }
 
     impl MenuItem {
@@ -500,6 +509,14 @@ macro_rules! export_server_mod {
                 }
                 fn block_placed(player: Player, pos: BlockPos, state: String) {
                     with(|m| m.block_placed(&player, pos, &state))
+                }
+            }
+            impl $crate::server::__UseGuest for Export {
+                fn uses() -> Vec<String> {
+                    <$t as ServerMod>::block_uses()
+                }
+                fn used(player: Player, block: $crate::server::UsedBlock) {
+                    with(|m| m.block_used(&player, &block))
                 }
             }
             impl $crate::server::__MenuGuest for Export {
