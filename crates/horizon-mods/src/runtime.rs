@@ -76,7 +76,10 @@ mod block_bindings {
     });
 }
 pub use block_bindings::exports::horizon::mods::block_entity_events::BlockEntity;
-use block_bindings::{BlockEntityHost, horizon::mods::block_entities};
+use block_bindings::{
+    BlockEntityHost,
+    horizon::mods::{block_entities, energy},
+};
 /// Claimed blocks a mod may list (`block-entity-events.blocks`).
 const CLAIMED_BLOCKS: usize = 256;
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
@@ -545,6 +548,12 @@ impl Mods {
                         .call_removed(&mut run.store, &e),
                     None => Ok(()),
                 });
+                // Its buffer stays readable in `removed`, then goes.
+                if let Ok(mut slot) = self.entities.lock()
+                    && let Some(store) = slot.as_mut()
+                {
+                    store.energy.remove(&id, &(e.dimension, [e.x, e.y, e.z]));
+                }
             }
             if !live.is_empty() {
                 self.call(i, FUEL_TICK, |run| match &run.blocks {
@@ -1763,6 +1772,100 @@ impl block_entities::Host for State {
             .as_mut()
             .ok_or("block entities are kept only during server hooks")?;
         store.set(&self.id, &(dimension, [x, y, z]), data)
+    }
+}
+impl State {
+    /// The lent block entity store, for capability `energy`.
+    fn with_store<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::BlockEntities, &str) -> R,
+    ) -> Result<R, String> {
+        let mut slot = self
+            .entities
+            .lock()
+            .map_err(|_| "block entities are unavailable".to_string())?;
+        let store = slot
+            .as_mut()
+            .ok_or("energy is kept only during server hooks")?;
+        Ok(f(store, &self.id))
+    }
+}
+impl energy::Host for State {
+    fn get(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<energy::Storage> {
+        let s = self
+            .with_store(|s, _| s.energy.get(&(dimension, [x, y, z])))
+            .ok()??;
+        Some(energy::Storage {
+            stored: s.stored,
+            capacity: s.capacity,
+            max_receive: s.max_receive,
+            max_extract: s.max_extract,
+        })
+    }
+    fn set_storage(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        capacity: u64,
+        max_receive: u64,
+        max_extract: u64,
+    ) -> Result<(), String> {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, id| {
+            if s.get(id, &key).is_none() {
+                return Err(format!(
+                    "no block entity of this mod at {x} {y} {z} in {}",
+                    key.0
+                ));
+            }
+            s.energy
+                .set_storage(id, key, capacity, max_receive, max_extract)
+        })?
+    }
+    fn set_stored(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        stored: u64,
+    ) -> Result<(), String> {
+        self.with_store(|s, id| s.energy.set_stored(id, &(dimension, [x, y, z]), stored))?
+    }
+    fn insert(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        amount: u64,
+        simulate: bool,
+    ) -> u64 {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, _| s.energy.insert(&key, amount, simulate))
+            .unwrap_or(0)
+    }
+    fn extract(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        amount: u64,
+        simulate: bool,
+    ) -> u64 {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, _| s.energy.extract(&key, amount, simulate))
+            .unwrap_or(0)
+    }
+    fn push(&mut self, dimension: String, x: i32, y: i32, z: i32, amount: u64) -> u64 {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, id| s.energy.push(id, &key, amount))
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(0)
     }
 }
 impl players::Host for State {

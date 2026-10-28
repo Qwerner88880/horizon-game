@@ -20,6 +20,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `world` | [`world`](#world) | read and change the world's blocks |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 | `block-entities` | [`block-entities`](#block-entities) | keep its own data on the blocks it claims, saved with the world |
+| `energy` | [`energy`](#energy) | store energy in its blocks and move energy between any mod's blocks |
 
 ## World `horizon-mod`
 
@@ -39,14 +40,14 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `server-events`
 
 ## World `block-entity-host`
 
 The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
 
-- Imports (what the game offers): `block-entities`
+- Imports (what the game offers): `block-entities`, `energy`
 - Exports (what the mod provides): `block-entity-events`
 
 ## World `horizon-ui-mod`
@@ -712,6 +713,30 @@ Capability `block-entities`, server mods only (manifest `api = "0.3"`, experimen
 | --- | --- | --- |
 | `get` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<list<u8>>` | The data of the mod's block entity at a position: none where it has none. |
 | `set` | `func(dimension: string, x: s32, y: s32, z: s32, data: list<u8>) -> result<_, string>` | Replaces the data of the mod's block entity at a position: an error where it has none, or for more than 16 KiB. |
+
+## `energy`
+
+Access: capability `energy`.
+
+Capability `energy`, server mods only (manifest `api = "0.3"`, experimental): energy buffers on block entities, shared by every mod. A mod gives its own block entities buffers; any mod fills and drains any buffer, so one mod's generator feeds another's machine. Buffers are saved with the world and go with their block entity (after its `removed`).
+
+### record `storage`
+
+| Field | Type | |
+| --- | --- | --- |
+| `stored` | `u64` |  |
+| `capacity` | `u64` |  |
+| `max-receive` | `u64` | The most `insert` puts in, and `extract` takes out, per call. |
+| `max-extract` | `u64` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `get` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<storage>` | The buffer at a position, whichever mod keeps it: none where there is none. |
+| `set-storage` | `func(dimension: string, x: s32, y: s32, z: s32, capacity: u64, max-receive: u64, max-extract: u64) -> result<_, string>` | Gives the mod's own block entity at a position a buffer, or changes its limits; what it stores is kept up to the new capacity. An error where the mod has no block entity, or another mod keeps a buffer. |
+| `set-stored` | `func(dimension: string, x: s32, y: s32, z: s32, stored: u64) -> result<_, string>` | Sets what the mod's own buffer stores (a generator making energy, a machine using it), up to its capacity. An error where the mod keeps no buffer. |
+| `insert` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Puts up to `amount` in the buffer at a position, as far as its `max-receive` and room allow: what went in (0 where there is none). `simulate`: only says. |
+| `extract` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Takes up to `amount` from the buffer at a position, as far as its `max-extract` and what it stores allow: what came out. |
+| `push` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64` | Moves up to `amount` from the mod's own buffer at a position into the buffers on its six sides, shared evenly, each as far as it takes: what moved. |
 
 ## `block-entity-events`
 

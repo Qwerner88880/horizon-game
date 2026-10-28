@@ -200,6 +200,7 @@ pub mod server {
         ServerCommand,
     };
     pub use horizon::mods::block_entities;
+    pub use horizon::mods::energy::{self, Storage as EnergyStorage};
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange};
 

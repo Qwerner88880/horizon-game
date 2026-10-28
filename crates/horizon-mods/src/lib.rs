@@ -10,6 +10,7 @@ pub mod block_entities;
 #[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;
+pub mod energy;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod manifest;

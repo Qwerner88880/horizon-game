@@ -597,6 +597,25 @@ experimental = ["block-entities"]
 structures don't make block entities; a server mod can't add blocks of its
 own (a content mod can, and a server mod may claim them).
 
+#### Energy (capability `energy`, experimental)
+
+Energy buffers on block entities, shared by every mod: one mod's generator
+feeds another's machine. The `cells` example keeps its charge this way.
+
+- **Buffers.** `energy::set_storage` gives one of the mod's own block
+  entities a buffer (capacity, most in and out per call), or changes it.
+  `set_stored` sets what the mod's own buffer holds: a generator making
+  energy, a machine spending it.
+- **Between mods.** `get`, `insert` and `extract` work on any mod's buffer,
+  within its limits; `simulate` only says how much would move. `push` moves
+  energy from the mod's own buffer into the buffers on its six sides, shared
+  evenly: a generator or a cable in one call.
+- **Life.** A buffer goes with its block entity, after `removed` (which can
+  still read it), and is saved with the world in `data/horizon/energy.json`.
+
+**Not yet.** Item energy (batteries in inventories), and item and fluid
+buffers on blocks.
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is

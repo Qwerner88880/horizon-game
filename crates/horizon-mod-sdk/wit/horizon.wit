@@ -705,6 +705,43 @@ interface block-entities {
     set: func(dimension: string, x: s32, y: s32, z: s32, data: list<u8>) -> result<_, string>;
 }
 
+/// Capability `energy`, server mods only (manifest `api = "0.3"`,
+/// experimental): energy buffers on block entities, shared by every mod. A
+/// mod gives its own block entities buffers; any mod fills and drains any
+/// buffer, so one mod's generator feeds another's machine. Buffers are saved
+/// with the world and go with their block entity (after its `removed`).
+interface energy {
+    record storage {
+        stored: u64,
+        capacity: u64,
+        /// The most `insert` puts in, and `extract` takes out, per call.
+        max-receive: u64,
+        max-extract: u64,
+    }
+    /// The buffer at a position, whichever mod keeps it: none where there is
+    /// none.
+    get: func(dimension: string, x: s32, y: s32, z: s32) -> option<storage>;
+    /// Gives the mod's own block entity at a position a buffer, or changes
+    /// its limits; what it stores is kept up to the new capacity. An error
+    /// where the mod has no block entity, or another mod keeps a buffer.
+    set-storage: func(dimension: string, x: s32, y: s32, z: s32, capacity: u64, max-receive: u64, max-extract: u64) -> result<_, string>;
+    /// Sets what the mod's own buffer stores (a generator making energy, a
+    /// machine using it), up to its capacity. An error where the mod keeps
+    /// no buffer.
+    set-stored: func(dimension: string, x: s32, y: s32, z: s32, stored: u64) -> result<_, string>;
+    /// Puts up to `amount` in the buffer at a position, as far as its
+    /// `max-receive` and room allow: what went in (0 where there is none).
+    /// `simulate`: only says.
+    insert: func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64;
+    /// Takes up to `amount` from the buffer at a position, as far as its
+    /// `max-extract` and what it stores allow: what came out.
+    extract: func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64;
+    /// Moves up to `amount` from the mod's own buffer at a position into the
+    /// buffers on its six sides, shared evenly, each as far as it takes:
+    /// what moved.
+    push: func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64;
+}
+
 /// What the server calls in a server mod with capability `block-entities`.
 /// A server mod built before it has no such export and keeps working.
 interface block-entity-events {
@@ -851,12 +888,14 @@ world horizon-server-mod {
 world horizon-block-mod {
     include horizon-server-mod;
     import block-entities;
+    import energy;
     export block-entity-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
 world block-entity-host {
     import block-entities;
+    import energy;
     export block-entity-events;
 }
 

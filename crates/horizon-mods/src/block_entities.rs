@@ -19,6 +19,8 @@ pub type Key = (String, [i32; 3]);
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockEntities {
     mods: BTreeMap<String, BTreeMap<Key, Vec<u8>>>,
+    /// Capability `energy`'s buffers on these block entities.
+    pub energy: crate::energy::Buffers,
     /// Changed since the last [`BlockEntities::save`].
     dirty: bool,
 }
@@ -48,7 +50,10 @@ impl BlockEntities {
     pub fn load(world: &Path) -> Self {
         let path = Self::path(world);
         let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
+            return Self {
+                energy: crate::energy::Buffers::load(world),
+                ..Self::default()
+            };
         };
         let parsed: Result<BTreeMap<String, Vec<Saved>>, _> = serde_json::from_str(&text);
         let Ok(saved) = parsed else {
@@ -56,7 +61,10 @@ impl BlockEntities {
             let _ = std::fs::rename(&path, path.with_extension("json.bad"));
             return Self::default();
         };
-        let mut out = Self::default();
+        let mut out = Self {
+            energy: crate::energy::Buffers::load(world),
+            ..Self::default()
+        };
         for (id, entities) in saved {
             let map = out.mods.entry(id).or_default();
             for e in entities {
@@ -71,6 +79,7 @@ impl BlockEntities {
     /// Writes the file when anything changed since the last save, through a
     /// temporary file so a crash mid-write keeps the old one.
     pub fn save(&mut self, world: &Path) -> std::io::Result<()> {
+        self.energy.save(world)?;
         if !self.dirty {
             return Ok(());
         }

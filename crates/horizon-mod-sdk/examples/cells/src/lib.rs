@@ -1,10 +1,11 @@
-//! Example Horizon server mod (`docs/mods.md`, "Block entities") with
-//! capability `block-entities`: every lodestone a player places becomes an
-//! energy cell. A cell charges itself each tick, shares its energy with the
+//! Example Horizon server mod (`docs/mods.md`, "Block entities", "Energy")
+//! with capabilities `block-entities` and `energy`: every lodestone a player
+//! places becomes an energy cell, an energy buffer any mod's machine can
+//! fill or drain. A cell charges itself each tick, shares its energy with the
 //! cells beside it, and keeps it in the world's save; breaking one says what
 //! was lost. `/cell [pos]` reads the cell under the player (or at `pos`).
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, Player, Registration, ServerMod, block_entities, players,
+    Args, Argument, BlockEntity, Player, Registration, ServerMod, block_entities, energy, players,
 };
 use std::collections::BTreeMap;
 
@@ -18,10 +19,15 @@ const FLOW: u64 = 100;
 
 struct Cells;
 
-/// A cell's energy, as its data holds it (8 bytes, little-endian); empty
-/// for a new one.
-fn energy(data: &[u8]) -> u64 {
+/// What a cell of the first version kept in its data (8 bytes,
+/// little-endian): moved into its buffer when it gets one.
+fn legacy_energy(data: &[u8]) -> u64 {
     data.try_into().map_or(0, u64::from_le_bytes)
+}
+
+/// The energy in the buffer at a position; 0 where there is none yet.
+fn stored(dimension: &str, x: i32, y: i32, z: i32) -> u64 {
+    energy::get(dimension, x, y, z).map_or(0, |s| s.stored)
 }
 
 /// One tick of every cell: each charges, then each pair side by side
@@ -66,24 +72,32 @@ impl ServerMod for Cells {
         // Cells share only within a dimension.
         let mut dimensions: BTreeMap<&str, BTreeMap<(i32, i32, i32), u64>> = BTreeMap::new();
         for e in entities {
+            let (d, x, y, z) = (&e.dimension, e.x, e.y, e.z);
+            // Other mods' machines may take up to FLOW a tick from a cell,
+            // and give it as much.
+            if energy::get(d, x, y, z).is_none() {
+                let _ = energy::set_storage(d, x, y, z, CAPACITY, FLOW, FLOW);
+                let _ = energy::set_stored(d, x, y, z, legacy_energy(&e.data));
+                let _ = block_entities::set(d, x, y, z, &[]);
+            }
             dimensions
-                .entry(&e.dimension)
+                .entry(d)
                 .or_default()
-                .insert((e.x, e.y, e.z), energy(&e.data));
+                .insert((x, y, z), stored(d, x, y, z));
         }
         for (dimension, mut cells) in dimensions {
             let before = cells.clone();
             step(&mut cells);
             for ((x, y, z), e) in cells {
                 if before.get(&(x, y, z)) != Some(&e) {
-                    let _ = block_entities::set(dimension, x, y, z, &e.to_le_bytes());
+                    let _ = energy::set_stored(dimension, x, y, z, e);
                 }
             }
         }
     }
 
     fn block_entity_removed(&mut self, entity: &BlockEntity) {
-        let lost = energy(&entity.data);
+        let lost = stored(&entity.dimension, entity.x, entity.y, entity.z);
         if lost > 0 {
             players::broadcast(&format!(
                 "The cell at {} {} {} is gone with {lost} FE",
@@ -106,10 +120,11 @@ impl ServerMod for Cells {
                 player.z.floor() as i32,
             ),
         };
-        let data = block_entities::get(&player.dimension, x, y, z).ok_or("No cell there")?;
+        let d = &player.dimension;
+        block_entities::get(d, x, y, z).ok_or("No cell there")?;
         Ok(Some(format!(
             "Cell at {x} {y} {z}: {} / {CAPACITY} FE",
-            energy(&data)
+            stored(d, x, y, z)
         )))
     }
 }
@@ -122,7 +137,8 @@ mod tests {
 
     #[test]
     fn a_new_cell_is_empty_and_charges() {
-        assert_eq!(energy(&[]), 0);
+        assert_eq!(legacy_energy(&[]), 0);
+        assert_eq!(legacy_energy(&7u64.to_le_bytes()), 7);
         let mut cells = BTreeMap::from([((0, 64, 0), 0)]);
         step(&mut cells);
         assert_eq!(cells[&(0, 64, 0)], CHARGE);

@@ -106,9 +106,11 @@ pub enum Capability {
     /// Data kept on placed copies of the mod's blocks, saved with the world
     /// (server mods).
     BlockEntities,
+    /// Energy buffers on block entities, shared by every mod (server mods).
+    Energy,
 }
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -122,6 +124,7 @@ impl Capability {
         Capability::World,
         Capability::Recipes,
         Capability::BlockEntities,
+        Capability::Energy,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -131,6 +134,7 @@ impl Capability {
                 | Capability::Players
                 | Capability::World
                 | Capability::BlockEntities
+                | Capability::Energy
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -149,6 +153,7 @@ impl Capability {
             Capability::World => "world",
             Capability::Recipes => "recipes",
             Capability::BlockEntities => "block-entities",
+            Capability::Energy => "energy",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -161,6 +166,7 @@ impl Capability {
                 | Capability::Input
                 | Capability::Recipes
                 | Capability::BlockEntities
+                | Capability::Energy
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -184,6 +190,9 @@ impl Capability {
             }
             Capability::BlockEntities => {
                 "keep its own data on the blocks it claims, saved with the world"
+            }
+            Capability::Energy => {
+                "store energy in its blocks and move energy between any mod's blocks"
             }
         }
     }
@@ -227,6 +236,7 @@ impl fmt::Display for Capability {
             Capability::World => "world",
             Capability::Recipes => "recipes",
             Capability::BlockEntities => "block-entities",
+            Capability::Energy => "energy",
         };
         f.write_str(name)
     }
