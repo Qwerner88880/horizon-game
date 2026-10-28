@@ -82,6 +82,12 @@ pub(super) struct ModsState {
     pub(super) displays: Vec<super::server_mods::ModDisplay>,
     #[cfg(feature = "mods")]
     pub(super) next_display: i32,
+    /// Capability `items`: stacks to drop, by dimension, made in that level;
+    /// and every item's stack size, for the mods' inventories.
+    #[cfg(feature = "mods")]
+    pub(super) drops: Vec<(String, [i32; 3], horizon_mods::items::Stack)>,
+    #[cfg(feature = "mods")]
+    pub(super) max_stacks: Option<std::sync::Arc<std::collections::HashMap<String, u32>>>,
     /// Blocks server mods set, by dimension, made before that level's next
     /// tick.
     #[cfg(feature = "mods")]
@@ -721,6 +727,7 @@ impl Game<'_> {
                 | Output::Reply { .. }
                 | Output::SetBlocks { .. }
                 | Output::OpenMenu { .. }
+                | Output::DropItems { .. }
                 | Output::SetMenuItems { .. }
                 | Output::CloseMenu { .. }
                 | Output::ShowDisplay { .. }

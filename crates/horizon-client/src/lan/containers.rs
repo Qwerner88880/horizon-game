@@ -318,6 +318,84 @@ impl Hub {
         }));
     }
 
+    /// A click in a mod's menu with slots bound to an inventory
+    /// (`menus.open-inventory`): what a chest menu does with pickup (left: the
+    /// whole stack, right: half or one) and quick move (shift), within what
+    /// each slot's mode allows. `slots` are the menu's own slots, changed in
+    /// place; the guest's inventory and carried stack change too. Button
+    /// slots and other inputs (drags, swaps) do nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mod_menu_click(
+        &mut self,
+        conn: u32,
+        slots: &mut [Option<ItemStack>],
+        modes: &[ModSlot],
+        slot: i16,
+        button: i8,
+        input: i32,
+        rules: &dyn Rules,
+    ) {
+        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        let Ok(s) = usize::try_from(slot) else {
+            return;
+        };
+        let size = slots.len();
+        let g = &mut self.guests[i];
+        match input {
+            0 if s < size => {
+                let mode = modes.get(s).copied().unwrap_or(ModSlot::Button);
+                if mode != ModSlot::Button {
+                    let place = mode != ModSlot::Output;
+                    let take = mode != ModSlot::Input;
+                    pickup(
+                        &mut slots[s],
+                        &mut g.carried,
+                        button == 1,
+                        place,
+                        take,
+                        rules,
+                    );
+                }
+            }
+            0 if s < size + 36 => {
+                let at = player_slot(s - size);
+                pickup(
+                    &mut g.inventory[at],
+                    &mut g.carried,
+                    button == 1,
+                    true,
+                    true,
+                    rules,
+                );
+            }
+            1 if s < size => {
+                let mode = modes.get(s).copied().unwrap_or(ModSlot::Button);
+                if mode != ModSlot::Button && mode != ModSlot::Input {
+                    // Container to player: the hotbar first, from its end
+                    // (moveItemStackTo(.., true) over the player's slots).
+                    let mut targets: Vec<(usize, &mut Option<ItemStack>)> =
+                        g.inventory.iter_mut().enumerate().take(36).collect();
+                    targets.sort_by_key(|(k, _)| if *k < 9 { (0, 8 - k) } else { (1, 35 - k) });
+                    let targets = targets.into_iter().map(|(_, s)| s).collect();
+                    slots[s] = move_into(slots[s].take(), targets, rules);
+                }
+            }
+            1 if s < size + 36 => {
+                let at = player_slot(s - size);
+                let targets: Vec<&mut Option<ItemStack>> = slots
+                    .iter_mut()
+                    .zip(modes)
+                    .filter(|(_, m)| matches!(m, ModSlot::Storage | ModSlot::Input))
+                    .map(|(s, _)| s)
+                    .collect();
+                g.inventory[at] = move_into(g.inventory[at].take(), targets, rules);
+            }
+            _ => {}
+        }
+    }
+
     /// An entity type's network id (a mod's display entity).
     pub fn entity_type_id(&self, kind: &str) -> Option<i32> {
         self.sync.builtin.get("minecraft:entity_type")?.id(kind)
@@ -692,6 +770,111 @@ impl Hub {
             self.sync_container_data(i, world);
         }
     }
+}
+
+/// What a slot of a mod's menu does (`menus.open-inventory`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModSlot {
+    /// The mod's own item: clicks go to the mod.
+    Button,
+    /// Bound to the inventory: items in and out.
+    Storage,
+    /// Bound: players only put items in.
+    Input,
+    /// Bound: players only take items out.
+    Output,
+}
+
+/// `Slot` pickup with the carried stack: `right` takes half or places one.
+fn pickup(
+    slot: &mut Option<ItemStack>,
+    carried: &mut Option<ItemStack>,
+    right: bool,
+    place: bool,
+    take: bool,
+    rules: &dyn Rules,
+) {
+    match (slot.take(), carried.take()) {
+        (None, None) => {}
+        (Some(s), None) if take => {
+            let n = if right { s.count.div_ceil(2) } else { s.count };
+            *carried = Some(ItemStack {
+                count: n,
+                ..s.clone()
+            });
+            *slot = (s.count > n).then(|| ItemStack {
+                count: s.count - n,
+                ..s
+            });
+        }
+        (None, Some(c)) if place => {
+            let max = rules.max_stack(&c.item);
+            let n = if right { 1 } else { c.count.min(max) };
+            *slot = Some(ItemStack {
+                count: n,
+                ..c.clone()
+            });
+            *carried = (c.count > n).then(|| ItemStack {
+                count: c.count - n,
+                ..c
+            });
+        }
+        (Some(mut s), Some(mut c)) if s.same_item_same_components(&c) => {
+            let max = rules.max_stack(&s.item);
+            if place {
+                let n = if right { 1 } else { c.count }.min(max.saturating_sub(s.count));
+                s.count += n;
+                c.count -= n;
+            } else if take {
+                // An output slot adds to what the player carries.
+                let n = s.count.min(max.saturating_sub(c.count));
+                c.count += n;
+                s.count -= n;
+            }
+            *slot = (s.count > 0).then_some(s);
+            *carried = (c.count > 0).then_some(c);
+        }
+        (Some(s), Some(c)) if place && take && c.count <= rules.max_stack(&c.item) => {
+            *slot = Some(c);
+            *carried = Some(s);
+        }
+        (s, c) => {
+            *slot = s;
+            *carried = c;
+        }
+    }
+}
+
+/// `moveItemStackTo`: `stack` onto equal stacks among `targets`, then into
+/// empty ones, in order: what is left.
+fn move_into(
+    stack: Option<ItemStack>,
+    mut targets: Vec<&mut Option<ItemStack>>,
+    rules: &dyn Rules,
+) -> Option<ItemStack> {
+    let mut stack = stack?;
+    let max = rules.max_stack(&stack.item);
+    for t in targets.iter_mut() {
+        if let Some(t) = t.as_mut()
+            && t.same_item_same_components(&stack)
+            && t.count < max
+        {
+            let n = stack.count.min(max - t.count);
+            t.count += n;
+            stack.count -= n;
+        }
+    }
+    for t in targets.iter_mut() {
+        if stack.count > 0 && t.is_none() {
+            let n = stack.count.min(max);
+            **t = Some(ItemStack {
+                count: n,
+                ..stack.clone()
+            });
+            stack.count -= n;
+        }
+    }
+    (stack.count > 0).then_some(stack)
 }
 
 /// Inventory index of the n-th player slot of a container menu (27 main, then the hotbar).

@@ -5,5 +5,5 @@ description = "Every lodestone a player places becomes an energy cell: an energy
 authors = ["Horizon"]
 api = "0.3"
 side = "server"
-capabilities = ["players", "block-entities", "energy", "menus", "displays"]
-experimental = ["block-entities", "energy", "menus", "displays"]
+capabilities = ["players", "block-entities", "energy", "menus", "displays", "items"]
+experimental = ["block-entities", "energy", "menus", "displays", "items"]

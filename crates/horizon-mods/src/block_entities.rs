@@ -21,6 +21,8 @@ pub struct BlockEntities {
     mods: BTreeMap<String, BTreeMap<Key, Vec<u8>>>,
     /// Capability `energy`'s buffers on these block entities.
     pub energy: crate::energy::Buffers,
+    /// Capability `items`' inventories on them.
+    pub items: crate::items::Inventories,
     /// Changed since the last [`BlockEntities::save`].
     dirty: bool,
 }
@@ -52,6 +54,7 @@ impl BlockEntities {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Self {
                 energy: crate::energy::Buffers::load(world),
+                items: crate::items::Inventories::load(world),
                 ..Self::default()
             };
         };
@@ -63,6 +66,7 @@ impl BlockEntities {
         };
         let mut out = Self {
             energy: crate::energy::Buffers::load(world),
+            items: crate::items::Inventories::load(world),
             ..Self::default()
         };
         for (id, entities) in saved {
@@ -80,6 +84,7 @@ impl BlockEntities {
     /// temporary file so a crash mid-write keeps the old one.
     pub fn save(&mut self, world: &Path) -> std::io::Result<()> {
         self.energy.save(world)?;
+        self.items.save(world)?;
         if !self.dirty {
             return Ok(());
         }

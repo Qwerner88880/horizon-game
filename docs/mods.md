@@ -638,6 +638,29 @@ cell's charge, refreshed twice a second, with buttons to drain and fill it.
 own player in in-frame single player (the default single player, on the
 server thread, has them).
 
+#### Inventories (capability `items`, experimental)
+
+Slots on block entities, shared by every mod as energy is (`IItemHandler`'s
+place): `items::set_slots` gives one of the mod's own block entities up to
+54 slots; `get`, `insert` (equal stacks first) and `extract` work on any
+mod's inventory, `set` on the mod's own. Stacks are an item, a count and
+components in vanilla's item syntax. Inventories are saved with the world in
+`data/horizon/items.json`; when their block goes, the items drop there
+(after `removed`, which can still read them), and so do those of slots
+`set_slots` takes away.
+
+`menus::open_inventory` opens a menu whose listed slots show such an
+inventory, each `Storage`, `Input` (players only put items in) or `Output`
+(only take them out): clicks pick up and place as in a chest (right click:
+half, or one), shift-click moves stacks between it and the player's
+inventory, and the menu follows the inventory as the mod changes it. A
+`cells` lodestone turns redstone put in its left slot into energy, and its
+Drain button makes redstone in its right one.
+
+**Not yet.** Drags across slots, number-key swaps and double-click
+collecting in mod menus (the menu shows the inventory again after them);
+hoppers and other vanilla blocks moving items in and out.
+
 #### Blocks of a mod's own (`block-use-events`)
 
 A server mod with block entities makes its claimed blocks machines of its

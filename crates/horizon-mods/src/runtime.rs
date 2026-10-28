@@ -78,7 +78,7 @@ mod block_bindings {
 pub use block_bindings::exports::horizon::mods::block_entity_events::BlockEntity;
 use block_bindings::{
     BlockEntityHost,
-    horizon::mods::{block_entities, energy},
+    horizon::mods::{block_entities, energy, items as mod_items},
 };
 /// Capability `menus`' world: its own, so server mods built before it (no
 /// `menu-events` export) still load. `players` is the server world's.
@@ -92,7 +92,15 @@ mod menu_bindings {
         },
     });
 }
-pub use menu_bindings::horizon::mods::menus::MenuItem;
+pub use menu_bindings::horizon::mods::menus::{MenuItem, MenuSlot, SlotMode};
+
+/// The inventory a menu's bound slots show (`menus.open-inventory`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuInventory {
+    pub dimension: String,
+    pub pos: [i32; 3],
+    pub slots: Vec<MenuSlot>,
+}
 /// `block-use-events`' world: its own, so server mods built before it
 /// still load. `players` is the server world's.
 mod use_bindings {
@@ -306,6 +314,15 @@ pub enum Output {
         title: String,
         rows: u32,
         items: Vec<MenuItem>,
+        /// `open-inventory`'s bound slots.
+        inventory: Option<MenuInventory>,
+    },
+    /// Capability `items`: stacks to drop at a block (an inventory whose
+    /// block went, slots an inventory lost).
+    DropItems {
+        dimension: String,
+        pos: [i32; 3],
+        stacks: Vec<crate::items::Stack>,
     },
     /// `menus.set-items`: the slots of that player's open menu `menu`.
     SetMenuItems {
@@ -348,6 +365,10 @@ pub trait WorldView: std::any::Any + Send {
     fn has_dimension(&self, dimension: &str) -> bool;
     /// `Err` (why) for a state string that names no block state.
     fn check_state(&self, state: &str) -> Result<(), String>;
+    /// An item's stack size; `None` for an item the game doesn't know.
+    fn max_stack(&self, _item: &str) -> Option<u32> {
+        None
+    }
 }
 
 /// The view lent for the current calls, shared by every mod's store.
@@ -623,11 +644,21 @@ impl Mods {
                         .call_removed(&mut run.store, &e),
                     None => Ok(()),
                 });
-                // Its buffer stays readable in `removed`, then goes.
+                // Its buffer and inventory stay readable in `removed`, then
+                // go: the inventory's items drop where the block was.
                 if let Ok(mut slot) = self.entities.lock()
                     && let Some(store) = slot.as_mut()
                 {
-                    store.energy.remove(&id, &(e.dimension, [e.x, e.y, e.z]));
+                    let key = (e.dimension, [e.x, e.y, e.z]);
+                    store.energy.remove(&id, &key);
+                    let stacks = store.items.remove(&id, &key);
+                    if !stacks.is_empty() {
+                        self.out.push(Output::DropItems {
+                            dimension: key.0,
+                            pos: key.1,
+                            stacks,
+                        });
+                    }
                 }
             }
             if !live.is_empty() {
@@ -2057,7 +2088,50 @@ impl menus::Host for State {
             title,
             rows,
             items,
+            inventory: None,
         });
+        Ok(())
+    }
+    fn open_inventory(
+        &mut self,
+        player: String,
+        menu: String,
+        title: String,
+        rows: u32,
+        items: Vec<MenuItem>,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        slots: Vec<MenuSlot>,
+    ) -> Result<(), String> {
+        if let Some(s) = slots.iter().find(|s| s.slot >= rows * 9) {
+            return Err(format!(
+                "slot {} past the menu's {} slots",
+                s.slot,
+                rows * 9
+            ));
+        }
+        let key = (dimension.clone(), [x, y, z]);
+        let size = self
+            .with_store(|s, id| match s.items.get(&key) {
+                Some(inv) if s.get(id, &key).is_some() => Ok(inv.len()),
+                _ => Err(format!(
+                    "no inventory of this mod at {x} {y} {z} in {dimension}"
+                )),
+            })
+            .map_err(|e| e.to_string())??;
+        if let Some(s) = slots.iter().find(|s| s.inventory_slot as usize >= size) {
+            return Err(format!("inventory slot {} of {size}", s.inventory_slot));
+        }
+        menus::Host::open(self, player, menu, title, rows, items)?;
+        if let Some(Output::OpenMenu { inventory, .. }) = self.out.last_mut() {
+            *inventory = Some(MenuInventory {
+                dimension,
+                pos: [x, y, z],
+                slots,
+            });
+        }
         Ok(())
     }
     fn set_items(
@@ -2096,6 +2170,130 @@ impl State {
             .as_mut()
             .ok_or("energy is kept only during server hooks")?;
         Ok(f(store, &self.id))
+    }
+}
+/// A capability `items` stack as the store keeps it.
+fn to_store(s: mod_items::Stack) -> crate::items::Stack {
+    crate::items::Stack {
+        item: s.item,
+        count: s.count,
+        components: s.components,
+    }
+}
+fn from_store(s: &crate::items::Stack) -> mod_items::Stack {
+    mod_items::Stack {
+        item: s.item.clone(),
+        count: s.count,
+        components: s.components.clone(),
+    }
+}
+impl State {
+    /// An item's stack size, from the lent world; 64 with none lent (the
+    /// registry's trial run).
+    fn max_stack(&self, item: &str) -> Option<u32> {
+        match self.world.lock().ok().as_ref().and_then(|v| v.as_ref()) {
+            Some(view) => view.max_stack(item),
+            None => Some(64),
+        }
+    }
+}
+impl mod_items::Host for State {
+    fn set_slots(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        slots: u32,
+    ) -> Result<(), String> {
+        let key = (dimension, [x, y, z]);
+        let lost = self.with_store(|s, id| {
+            if s.get(id, &key).is_none() {
+                return Err(format!(
+                    "no block entity of this mod at {x} {y} {z} in {}",
+                    key.0
+                ));
+            }
+            s.items.set_slots(id, key.clone(), slots as usize)
+        })??;
+        if !lost.is_empty() {
+            self.out.push(Output::DropItems {
+                dimension: key.0,
+                pos: key.1,
+                stacks: lost,
+            });
+        }
+        Ok(())
+    }
+    fn get(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<Vec<Option<mod_items::Stack>>> {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, _| {
+            s.items
+                .get(&key)
+                .map(|slots| slots.iter().map(|s| s.as_ref().map(from_store)).collect())
+        })
+        .ok()?
+    }
+    fn set(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        slot: u32,
+        stack: Option<mod_items::Stack>,
+    ) -> Result<(), String> {
+        if let Some(st) = &stack {
+            let max = self
+                .max_stack(&st.item)
+                .ok_or_else(|| format!("no item {}", st.item))?;
+            if st.count > max {
+                return Err(format!(
+                    "{} {}: at most {max} in a stack",
+                    st.count, st.item
+                ));
+            }
+        }
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, id| s.items.set(id, &key, slot as usize, stack.map(to_store)))?
+    }
+    fn insert(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        stack: mod_items::Stack,
+        simulate: bool,
+    ) -> u32 {
+        let Some(max) = self.max_stack(&stack.item) else {
+            return 0;
+        };
+        let key = (dimension, [x, y, z]);
+        let stack = to_store(stack);
+        self.with_store(|s, _| s.items.insert(&key, &stack, max, simulate))
+            .unwrap_or(0)
+    }
+    fn extract(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        slot: u32,
+        count: u32,
+        simulate: bool,
+    ) -> Option<mod_items::Stack> {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, _| s.items.extract(&key, slot as usize, count, simulate))
+            .ok()?
+            .map(|s| from_store(&s))
     }
 }
 impl energy::Host for State {

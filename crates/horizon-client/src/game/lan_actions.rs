@@ -191,6 +191,11 @@ impl GuestPlay {
 }
 
 struct ItemRules<'a>(&'a horizon_client::items::Items);
+/// The item rules a click in a menu follows.
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+pub(super) fn item_rules(items: &horizon_client::items::Items) -> impl Rules + '_ {
+    ItemRules(items)
+}
 impl Rules for ItemRules<'_> {
     fn items(&self) -> &horizon_client::items::Items {
         self.0

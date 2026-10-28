@@ -204,7 +204,8 @@ pub mod server {
     pub use horizon::mods::block_entities;
     pub use horizon::mods::displays::{self, Shape, Transform};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
-    pub use horizon::mods::menus::{self, MenuItem};
+    pub use horizon::mods::items::{self, Stack};
+    pub use horizon::mods::menus::{self, MenuItem, MenuSlot, SlotMode};
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange};
 

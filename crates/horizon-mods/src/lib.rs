@@ -13,6 +13,7 @@ pub mod content;
 pub mod energy;
 #[cfg(feature = "index")]
 pub mod index;
+pub mod items;
 pub mod manifest;
 pub mod modpack;
 #[cfg(feature = "runtime")]

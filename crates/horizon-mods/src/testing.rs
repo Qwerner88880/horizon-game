@@ -41,6 +41,9 @@ pub struct TestGame {
 struct ScriptWorld(std::collections::BTreeMap<(i32, i32, i32), String>);
 
 impl crate::WorldView for ScriptWorld {
+    fn max_stack(&self, _item: &str) -> Option<u32> {
+        Some(64)
+    }
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let here = (dimension == "minecraft:overworld")
             .then(|| self.0.get(&(x, y, z)).cloned())

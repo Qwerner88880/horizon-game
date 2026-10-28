@@ -28,7 +28,12 @@ pub(super) struct ModMenu {
     pub(super) window: i32,
     pub(super) mod_id: String,
     pub(super) menu: String,
+    /// The mod's own items (capability `menus`), slot by slot.
     pub(super) items: Vec<Option<horizon_client::items::ItemStack>>,
+    /// `open-inventory`'s bound slots, and the slots last sent.
+    #[cfg(feature = "mods")]
+    pub(super) inventory: Option<horizon_mods::MenuInventory>,
+    pub(super) sent: Vec<Option<horizon_client::items::ItemStack>>,
 }
 
 /// A server mod's display entity (capability `displays`): sent as packets
@@ -107,7 +112,8 @@ mod run {
     use super::{Game, LanHost, ModEvent, ModMenu, Who};
     use horizon_client::chunk_map::ChunkMap;
     use horizon_client::items::ItemStack;
-    use horizon_mods::{DisplayShape, Transform};
+    use horizon_client::lan::containers::ModSlot;
+    use horizon_mods::{DisplayShape, SlotMode, Transform, items::Stack};
     use horizon_protocol::entity_data::{Value as Data, serializer};
 
     /// Mods' display entities take ids from here up, past the world's.
@@ -167,8 +173,12 @@ mod run {
         registry: &'static BlockRegistry,
         biomes: std::sync::Arc<horizon_client::biome::Biomes>,
         dims: Vec<(&'static str, ChunkMap)>,
+        max_stacks: std::sync::Arc<std::collections::HashMap<String, u32>>,
     }
     impl WorldView for LentWorld {
+        fn max_stack(&self, item: &str) -> Option<u32> {
+            self.max_stacks.get(item).copied()
+        }
         fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
@@ -435,6 +445,7 @@ mod run {
             self.mods.mods.block_entity_tick(self.ticks);
             self.sync_mod_displays(None);
             self.return_world();
+            self.refresh_mod_menus(None);
             self.mods.players = players;
             self.show_mod_output();
             self.apply_mod_block_writes();
@@ -466,10 +477,24 @@ mod run {
             }
             let registry = self.pack.assets.registry;
             let biomes = self.res.biomes().clone();
+            let max_stacks = self
+                .mods
+                .max_stacks
+                .get_or_insert_with(|| {
+                    let items = &self.res.items().items;
+                    std::sync::Arc::new(
+                        items
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.max_stack))
+                            .collect(),
+                    )
+                })
+                .clone();
             self.mods.mods.lend_world(Box::new(LentWorld {
                 registry,
                 biomes,
                 dims,
+                max_stacks,
             }));
             self.read_mod_block_entities();
             let store = std::mem::take(&mut self.mods.block_entities);
@@ -525,6 +550,18 @@ mod run {
         /// Makes the blocks server mods set in the level in place, in order,
         /// as `/setblock` does. Those of other dimensions wait for their level.
         pub(in crate::game) fn apply_mod_block_writes(&mut self) {
+            if !self.mods.drops.is_empty() {
+                let dim = self.dim.id();
+                let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.drops)
+                    .into_iter()
+                    .partition(|(d, _, _)| d == dim);
+                self.mods.drops = later;
+                for (_, pos, s) in now {
+                    if let Some(stack) = self.mod_stack(&s.item, s.count, &s.components) {
+                        self.pop_resource(pos, stack);
+                    }
+                }
+            }
             if self.mods.block_writes.is_empty() {
                 return;
             }
@@ -591,22 +628,116 @@ mod run {
                 let Some(slot) = out.get_mut(i.slot as usize) else {
                     continue;
                 };
-                if self.res.items().get(&i.item).is_none() {
-                    log::debug!("Horizon: a mod menu shows unknown item {}", i.item);
-                    continue;
-                }
-                let (damage, extra) = horizon_client::item_data::command_components(&i.components)
-                    .map_or((0, None), |tag| {
-                        horizon_client::item_data::decode_components(Some(&tag))
-                    });
-                *slot = Some(ItemStack {
-                    item: i.item.as_str().into(),
-                    count: i.count,
-                    damage,
-                    extra,
-                });
+                *slot = self.mod_stack(&i.item, i.count, &i.components);
             }
             out
+        }
+
+        /// A mod's stack (item, count, components in item syntax) as the
+        /// game's; None for an item the game doesn't know.
+        fn mod_stack(&self, item: &str, count: u32, components: &str) -> Option<ItemStack> {
+            Self::stack_of(self.res.items(), item, count, components)
+        }
+        fn stack_of(
+            items: &horizon_client::items::Items,
+            item: &str,
+            count: u32,
+            components: &str,
+        ) -> Option<ItemStack> {
+            if items.get(item).is_none() {
+                log::debug!("Horizon: a mod shows unknown item {item}");
+                return None;
+            }
+            let (damage, extra) = horizon_client::item_data::command_components(components)
+                .map_or((0, None), |tag| {
+                    horizon_client::item_data::decode_components(Some(&tag))
+                });
+            Some(ItemStack {
+                item: item.into(),
+                count,
+                damage,
+                extra,
+            })
+        }
+
+        /// The game's stack as a mod's inventory keeps it.
+        fn store_stack(stack: &ItemStack) -> Stack {
+            let components = match horizon_client::item_data::encode_components(stack) {
+                Some(horizon_world::nbt::Tag::Compound(map)) if !map.is_empty() => {
+                    let parts: Vec<String> = map
+                        .iter()
+                        .map(|(k, v)| {
+                            format!(
+                                "{}={}",
+                                k.to_string_lossy(),
+                                horizon_client::snbt::to_snbt(v)
+                            )
+                        })
+                        .collect();
+                    format!("[{}]", parts.join(","))
+                }
+                _ => String::new(),
+            };
+            Stack {
+                item: stack.item.to_string(),
+                count: stack.count,
+                components,
+            }
+        }
+
+        /// What a mod's menu shows now: its items, and in its bound slots the
+        /// inventory's.
+        fn mod_menu_view(&self, m: &ModMenu) -> Vec<Option<ItemStack>> {
+            Self::menu_view(self.res.items(), &self.mods.block_entities, m)
+        }
+        fn menu_view(
+            items: &horizon_client::items::Items,
+            store: &horizon_mods::BlockEntities,
+            m: &ModMenu,
+        ) -> Vec<Option<ItemStack>> {
+            let mut view = m.items.clone();
+            if let Some(inv) = &m.inventory {
+                let key = (inv.dimension.clone(), inv.pos);
+                let slots = store.items.get(&key).unwrap_or_default();
+                for s in &inv.slots {
+                    if let Some(v) = view.get_mut(s.slot as usize) {
+                        *v = slots
+                            .get(s.inventory_slot as usize)
+                            .cloned()
+                            .flatten()
+                            .and_then(|st| {
+                                Self::stack_of(items, &st.item, st.count, &st.components)
+                            });
+                    }
+                }
+            }
+            view
+        }
+
+        /// Open mod menus with bound slots show their inventories as they
+        /// change (a machine filling its output).
+        fn refresh_mod_menus(&mut self, host: Option<&mut LanHost>) {
+            if !self.mods.menus.iter().any(|m| m.inventory.is_some()) {
+                return;
+            }
+            let Some(host) = host.or(self.lan.as_mut()) else {
+                return;
+            };
+            for i in 0..self.mods.menus.len() {
+                if self.mods.menus[i].inventory.is_none() {
+                    continue;
+                }
+                let view = Self::menu_view(
+                    self.res.items(),
+                    &self.mods.block_entities,
+                    &self.mods.menus[i],
+                );
+                let m = &mut self.mods.menus[i];
+                if view != m.sent {
+                    host.hub.mod_menu_content(m.conn, m.window, &view);
+                    m.sent = view;
+                }
+            }
         }
 
         /// Sends the mods' displays to the players in their dimensions that
@@ -704,20 +835,55 @@ mod run {
             conn: u32,
             p: &play::ContainerClick,
         ) -> bool {
-            let Some(m) = self
+            let Some(mi) = self
                 .mods
                 .menus
                 .iter()
-                .find(|m| m.conn == conn && m.window == p.container)
+                .position(|m| m.conn == conn && m.window == p.container)
             else {
                 return false;
             };
+            let m = &self.mods.menus[mi];
             let (window, items) = (m.window, m.items.clone());
             let (mod_id, menu) = (m.mod_id.clone(), m.menu.clone());
-            // Pickup (0) and quick move (1) on the menu's own slots reach the
-            // mod; drags, swaps and the inventory below don't.
+            let inventory = m.inventory.clone();
+            let mut bound = false;
+            if let Some(inv) = &inventory {
+                self.read_mod_block_entities();
+                let mut view = self.mod_menu_view(&self.mods.menus[mi]);
+                let mut modes = vec![ModSlot::Button; view.len()];
+                for s in &inv.slots {
+                    if let Some(mode) = modes.get_mut(s.slot as usize) {
+                        *mode = match s.mode {
+                            SlotMode::Storage => ModSlot::Storage,
+                            SlotMode::Input => ModSlot::Input,
+                            SlotMode::Output => ModSlot::Output,
+                        };
+                    }
+                }
+                let rules = super::super::lan_actions::item_rules(self.res.items());
+                host.hub
+                    .mod_menu_click(conn, &mut view, &modes, p.slot, p.button, p.input, &rules);
+                // The bound slots back into the inventory.
+                let key = (inv.dimension.clone(), inv.pos);
+                if let Ok(slots) = self.mods.block_entities.items.slots_mut(None, &key) {
+                    for s in &inv.slots {
+                        if let (Some(v), Some(dst)) = (
+                            view.get(s.slot as usize),
+                            slots.get_mut(s.inventory_slot as usize),
+                        ) {
+                            *dst = v.as_ref().map(Self::store_stack);
+                        }
+                    }
+                }
+                bound =
+                    usize::try_from(p.slot).is_ok_and(|s| modes.get(s) != Some(&ModSlot::Button));
+            }
+            // Pickup (0) and quick move (1) on the menu's own items reach the
+            // mod; drags, swaps, bound slots and the inventory below don't.
             if let Ok(slot) = u32::try_from(p.slot)
                 && (slot as usize) < items.len()
+                && !bound
                 && matches!(p.input, 0 | 1)
                 && self.hears_players()
             {
@@ -726,7 +892,24 @@ mod run {
                     ModEvent::MenuClick(Who::Conn(conn), mod_id, menu, slot, button, p.input == 1);
                 self.mods.events.push(event);
             }
-            host.hub.mod_menu_content(conn, window, &items);
+            let view = match self
+                .mods
+                .menus
+                .iter()
+                .find(|m| m.window == window && m.conn == conn)
+            {
+                Some(m) => self.mod_menu_view(m),
+                None => items,
+            };
+            host.hub.mod_menu_content(conn, window, &view);
+            if let Some(m) = self
+                .mods
+                .menus
+                .iter_mut()
+                .find(|m| m.window == window && m.conn == conn)
+            {
+                m.sent = view;
+            }
             true
         }
 
@@ -916,8 +1099,10 @@ mod run {
                     title,
                     rows,
                     items,
+                    inventory,
                 } => {
                     let items = self.mod_menu_stacks(rows, &items);
+                    self.read_mod_block_entities();
                     let Some(host) = host.or(self.lan.as_mut()) else {
                         log::warn!(
                             "Horizon: mod {mod_id}'s menus need the server thread (not in-frame yet)"
@@ -932,15 +1117,28 @@ mod run {
                     let Some(window) = host.hub.open_mod_menu(conn, rows, title) else {
                         return;
                     };
-                    host.hub.mod_menu_content(conn, window, &items);
-                    self.mods.menus.push(ModMenu {
+                    let mut m = ModMenu {
                         conn,
                         player,
                         window,
                         mod_id,
                         menu,
                         items,
-                    });
+                        inventory,
+                        sent: Vec::new(),
+                    };
+                    m.sent = Self::menu_view(self.res.items(), &self.mods.block_entities, &m);
+                    host.hub.mod_menu_content(conn, window, &m.sent);
+                    self.mods.menus.push(m);
+                }
+                Output::DropItems {
+                    dimension,
+                    pos,
+                    stacks,
+                } => {
+                    for s in stacks {
+                        self.mods.drops.push((dimension.clone(), pos, s));
+                    }
                 }
                 Output::SetMenuItems {
                     mod_id,
@@ -960,9 +1158,15 @@ mod run {
                     let Some(host) = host.or(self.lan.as_mut()) else {
                         return;
                     };
+                    self.mods.menus[i].items = items;
+                    let view = Self::menu_view(
+                        self.res.items(),
+                        &self.mods.block_entities,
+                        &self.mods.menus[i],
+                    );
                     let m = &mut self.mods.menus[i];
-                    m.items = items;
-                    host.hub.mod_menu_content(m.conn, m.window, &m.items);
+                    host.hub.mod_menu_content(m.conn, m.window, &view);
+                    m.sent = view;
                 }
                 Output::CloseMenu { mod_id, player } => {
                     let Some(i) = self

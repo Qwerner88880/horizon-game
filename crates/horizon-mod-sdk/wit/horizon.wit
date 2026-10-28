@@ -742,6 +742,41 @@ interface energy {
     push: func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64;
 }
 
+/// Capability `items`, server mods only (manifest `api = "0.3"`,
+/// experimental): inventories on block entities, shared by every mod (as
+/// energy is). A mod gives its own block entities slots; any mod puts items
+/// in and takes them out, so one mod's pipe feeds another's machine.
+/// Inventories are saved with the world; when their block goes, its items
+/// drop there (after `removed`, which can still read them).
+interface items {
+    record stack {
+        /// `minecraft:coal`, ...
+        item: string,
+        count: u32,
+        /// Components beyond the item's own, in vanilla's item syntax; empty
+        /// for none.
+        components: string,
+    }
+    /// Gives the mod's own block entity at a position an inventory of
+    /// `slots` slots (at most 54), or changes how many; the items of slots
+    /// it loses drop there. An error where the mod has no block entity, or
+    /// another mod keeps an inventory.
+    set-slots: func(dimension: string, x: s32, y: s32, z: s32, slots: u32) -> result<_, string>;
+    /// The inventory at a position, whichever mod keeps it, slot by slot:
+    /// none where there is none.
+    get: func(dimension: string, x: s32, y: s32, z: s32) -> option<list<option<stack>>>;
+    /// Replaces slot `slot` of the mod's own inventory (none empties it): an
+    /// error for an unknown item or a count past its stack size.
+    set: func(dimension: string, x: s32, y: s32, z: s32, slot: u32, stack: option<stack>) -> result<_, string>;
+    /// Puts as much of `stack` as fits into the inventory at a position,
+    /// on equal stacks first: how many went in (0 for an unknown item).
+    /// `simulate`: only says.
+    insert: func(dimension: string, x: s32, y: s32, z: s32, stack: stack, simulate: bool) -> u32;
+    /// Takes up to `count` items from slot `slot` of the inventory at a
+    /// position: what came out.
+    extract: func(dimension: string, x: s32, y: s32, z: s32, slot: u32, count: u32, simulate: bool) -> option<stack>;
+}
+
 /// Capability `menus`, server mods only (manifest `api = "0.3"`,
 /// experimental): chest menus the mod opens for a player, with items of its
 /// own in the slots. Players see and click them but can't take the items;
@@ -770,6 +805,30 @@ interface menus {
     set-items: func(player: string, menu: string, items: list<menu-item>) -> result<_, string>;
     /// Closes the player's menu of this mod, if one is open.
     close: func(player: string);
+
+    /// What a menu slot bound to an inventory takes.
+    enum slot-mode {
+        /// Items go in and out, as in a chest.
+        storage,
+        /// Players only put items in (a machine's input, fuel).
+        input,
+        /// Players only take items out (a machine's output).
+        output,
+    }
+    record menu-slot {
+        /// The menu's slot.
+        slot: u32,
+        /// The inventory's slot it shows.
+        inventory-slot: u32,
+        mode: slot-mode,
+    }
+    /// Opens a menu as `open` does, whose slots `slots` show the inventory
+    /// (capability `items`) of the mod's block entity at a position:
+    /// players put their items in and take them out as in a chest, and
+    /// shift-click moves them between it and their inventory. The menu
+    /// follows the inventory as it changes. Its other slots are the mod's
+    /// items, clicks on them reaching `menu-events.clicked`.
+    open-inventory: func(player: string, menu: string, title: string, rows: u32, items: list<menu-item>, dimension: string, x: s32, y: s32, z: s32, slots: list<menu-slot>) -> result<_, string>;
 }
 
 /// Capability `displays`, server mods only (manifest `api = "0.3"`,
@@ -988,6 +1047,7 @@ world horizon-block-mod {
     import energy;
     import menus;
     import displays;
+    import items;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -997,6 +1057,7 @@ world horizon-block-mod {
 world block-entity-host {
     import block-entities;
     import energy;
+    import items;
     export block-entity-events;
 }
 

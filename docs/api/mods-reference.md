@@ -23,6 +23,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `energy` | [`energy`](#energy) | store energy in its blocks and move energy between any mod's blocks |
 | `menus` | [`menus`](#menus) | open menus of its own for you, and see what you click in them |
 | `displays` | [`displays`](#displays) | show block models and text of its own in the world |
+| `items` | [`items`](#items) | keep items in its blocks and move items between any mod's blocks |
 
 ## World `horizon-mod`
 
@@ -42,14 +43,14 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `server-events`
 
 ## World `block-entity-host`
 
 The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
 
-- Imports (what the game offers): `block-entities`, `energy`
+- Imports (what the game offers): `block-entities`, `energy`, `items`
 - Exports (what the mod provides): `block-entity-events`
 
 ## World `use-host`
@@ -761,6 +762,28 @@ Capability `energy`, server mods only (manifest `api = "0.3"`, experimental): en
 | `extract` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Takes up to `amount` from the buffer at a position, as far as its `max-extract` and what it stores allow: what came out. |
 | `push` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64` | Moves up to `amount` from the mod's own buffer at a position into the buffers on its six sides, shared evenly, each as far as it takes: what moved. |
 
+## `items`
+
+Access: capability `items`.
+
+Capability `items`, server mods only (manifest `api = "0.3"`, experimental): inventories on block entities, shared by every mod (as energy is). A mod gives its own block entities slots; any mod puts items in and takes them out, so one mod's pipe feeds another's machine. Inventories are saved with the world; when their block goes, its items drop there (after `removed`, which can still read them).
+
+### record `stack`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` | `minecraft:coal`, ... |
+| `count` | `u32` |  |
+| `components` | `string` | Components beyond the item's own, in vanilla's item syntax; empty for none. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-slots` | `func(dimension: string, x: s32, y: s32, z: s32, slots: u32) -> result<_, string>` | Gives the mod's own block entity at a position an inventory of `slots` slots (at most 54), or changes how many; the items of slots it loses drop there. An error where the mod has no block entity, or another mod keeps an inventory. |
+| `get` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<list<option<stack>>>` | The inventory at a position, whichever mod keeps it, slot by slot: none where there is none. |
+| `set` | `func(dimension: string, x: s32, y: s32, z: s32, slot: u32, stack: option<stack>) -> result<_, string>` | Replaces slot `slot` of the mod's own inventory (none empties it): an error for an unknown item or a count past its stack size. |
+| `insert` | `func(dimension: string, x: s32, y: s32, z: s32, stack: stack, simulate: bool) -> u32` | Puts as much of `stack` as fits into the inventory at a position, on equal stacks first: how many went in (0 for an unknown item). `simulate`: only says. |
+| `extract` | `func(dimension: string, x: s32, y: s32, z: s32, slot: u32, count: u32, simulate: bool) -> option<stack>` | Takes up to `count` items from slot `slot` of the inventory at a position: what came out. |
+
 ## `menus`
 
 Access: capability `menus`.
@@ -776,11 +799,30 @@ Capability `menus`, server mods only (manifest `api = "0.3"`, experimental): che
 | `count` | `u32` |  |
 | `components` | `string` | Components beyond the item's own, in vanilla's item syntax: `[custom_name={text:"Energy",italic:false}]`; empty for none. |
 
+### enum `slot-mode`
+
+What a menu slot bound to an inventory takes.
+
+| Case | |
+| --- | --- |
+| `storage` | Items go in and out, as in a chest. |
+| `input` | Players only put items in (a machine's input, fuel). |
+| `output` | Players only take items out (a machine's output). |
+
+### record `menu-slot`
+
+| Field | Type | |
+| --- | --- | --- |
+| `slot` | `u32` | The menu's slot. |
+| `inventory-slot` | `u32` | The inventory's slot it shows. |
+| `mode` | `slot-mode` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `open` | `func(player: string, menu: string, title: string, rows: u32, items: list<menu-item>) -> result<_, string>` | Opens a menu of `rows` rows (1 to 6) titled `title` for the player with this id, closing the menu they had open; `menu` is the mod's own name for it, given back with each click. Slots no item names are empty. An error for a player not on the server, rows out of range or a slot past the last, or for the window's own player in in-frame single player (not yet). |
 | `set-items` | `func(player: string, menu: string, items: list<menu-item>) -> result<_, string>` | Replaces every slot of the player's menu `menu` of this mod, while it is open: an error where it isn't. |
 | `close` | `func(player: string)` | Closes the player's menu of this mod, if one is open. |
+| `open-inventory` | `func(player: string, menu: string, title: string, rows: u32, items: list<menu-item>, dimension: string, x: s32, y: s32, z: s32, slots: list<menu-slot>) -> result<_, string>` | Opens a menu as `open` does, whose slots `slots` show the inventory (capability `items`) of the mod's block entity at a position: players put their items in and take them out as in a chest, and shift-click moves them between it and their inventory. The menu follows the inventory as it changes. Its other slots are the mod's items, clicks on them reaching `menu-events.clicked`. |
 
 ## `displays`
 

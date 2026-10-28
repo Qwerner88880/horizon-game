@@ -7,10 +7,13 @@
 //! `/cellgui [pos]`, or a right click on the cell, opens its menu
 //! (capability `menus`): its charge, kept up to date, and buttons to drain
 //! or fill it. Above each cell floats its charge, and a small redstone
-//! core spins (capability `displays`).
+//! core spins (capability `displays`). Each cell has two slots (capability
+//! `items`), shown in its menu: redstone put in the left one turns into
+//! energy, and the menu's Drain button turns energy into redstone in the
+//! right one, which players can only take from.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, MenuItem, Player, Registration, ServerMod, Shape, Transform,
-    UsedBlock, block_entities, displays, energy, menus, players,
+    Args, Argument, BlockEntity, MenuItem, MenuSlot, Player, Registration, ServerMod, Shape,
+    SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items, menus, players,
 };
 use std::collections::BTreeMap;
 
@@ -33,8 +36,21 @@ const DRAIN: u32 = 11;
 const CHARGE_SLOT: u32 = 13;
 const FILL: u32 = 15;
 const CLOSE: u32 = 22;
-/// Energy a button moves.
+/// Energy a button moves, and a redstone dust is worth.
 const STEP: u64 = 1000;
+/// The cell's slots: redstone in, redstone out; and where its menu shows them.
+const INPUT: u32 = 0;
+const OUTPUT: u32 = 1;
+const INPUT_SLOT: u32 = 10;
+const OUTPUT_SLOT: u32 = 16;
+const REDSTONE: &str = "minecraft:redstone";
+
+/// How many items slot `slot` of the cell at a position holds.
+fn count(d: &str, x: i32, y: i32, z: i32, slot: u32) -> u32 {
+    items::get(d, x, y, z)
+        .and_then(|s| s.get(slot as usize).cloned().flatten())
+        .map_or(0, |s| s.count)
+}
 /// Ticks between two refreshes of an open menu, and of the displays.
 const REFRESH: u64 = 10;
 /// The core's size, and how far it turns each refresh (the client turns it
@@ -76,7 +92,7 @@ fn view(stored: u64) -> Vec<MenuItem> {
     vec![
         MenuItem::new(DRAIN, "minecraft:hopper", 1).named(
             &format!("Drain {STEP} FE"),
-            &["Takes energy out of the cell"],
+            &["Makes a redstone dust in the right slot"],
         ),
         MenuItem::new(CHARGE_SLOT, "minecraft:redstone_block", 1)
             .named(&format!("{stored} / {CAPACITY} FE"), &[&bar]),
@@ -141,7 +157,8 @@ impl ServerMod for Cells {
             Cells::default(),
             Registration::new()
                 .command_with("cell", [Argument::block_pos("pos").optional()])
-                .command_with("cellgui", [Argument::block_pos("pos").optional()]),
+                .command_with("cellgui", [Argument::block_pos("pos").optional()])
+                .command_with("cellitems", [Argument::block_pos("pos").optional()]),
         ))
     }
 
@@ -168,6 +185,14 @@ impl ServerMod for Cells {
                 let _ = energy::set_storage(d, x, y, z, CAPACITY, FLOW, FLOW);
                 let _ = energy::set_stored(d, x, y, z, legacy_energy(&e.data));
                 let _ = block_entities::set(d, x, y, z, &[]);
+            }
+            if items::get(d, x, y, z).is_none() {
+                let _ = items::set_slots(d, x, y, z, 2);
+            }
+            // A redstone dust in the input slot: STEP more energy, if it fits.
+            if count(d, x, y, z, INPUT) > 0 && stored(d, x, y, z) + STEP <= CAPACITY {
+                let _ = items::extract(d, x, y, z, INPUT, 1, false);
+                let _ = energy::set_stored(d, x, y, z, stored(d, x, y, z) + STEP);
             }
             dimensions
                 .entry(d)
@@ -254,6 +279,10 @@ impl ServerMod for Cells {
             self.open_menu(player, d, x, y, z)?;
             return Ok(None);
         }
+        if name == "cellitems" {
+            let (i, o) = (count(d, x, y, z, INPUT), count(d, x, y, z, OUTPUT));
+            return Ok(Some(format!("Cell at {x} {y} {z}: {i} in, {o} out")));
+        }
         Ok(Some(format!(
             "Cell at {x} {y} {z}: {} / {CAPACITY} FE",
             stored(d, x, y, z)
@@ -266,7 +295,19 @@ impl ServerMod for Cells {
         };
         let now = stored(&d, x, y, z);
         let next = match slot {
-            DRAIN => now.saturating_sub(STEP),
+            DRAIN => {
+                let made = count(&d, x, y, z, OUTPUT);
+                if now < STEP || made >= 64 {
+                    return;
+                }
+                let dust = Stack {
+                    item: REDSTONE.into(),
+                    count: made + 1,
+                    components: String::new(),
+                };
+                let _ = items::set(&d, x, y, z, OUTPUT, Some(&dust));
+                now - STEP
+            }
             FILL => (now + STEP).min(CAPACITY),
             CLOSE => {
                 self.open.remove(&player.id);
@@ -295,7 +336,20 @@ impl Cells {
         z: i32,
     ) -> Result<(), String> {
         let title = format!("Energy Cell {x} {y} {z}");
-        menus::open(&player.id, "cell", &title, 3, &view(stored(d, x, y, z)))?;
+        let slots = [
+            MenuSlot {
+                slot: INPUT_SLOT,
+                inventory_slot: INPUT,
+                mode: SlotMode::Input,
+            },
+            MenuSlot {
+                slot: OUTPUT_SLOT,
+                inventory_slot: OUTPUT,
+                mode: SlotMode::Output,
+            },
+        ];
+        let items = view(stored(d, x, y, z));
+        menus::open_inventory(&player.id, "cell", &title, 3, &items, d, x, y, z, &slots)?;
         self.open.insert(player.id.clone(), (d.to_owned(), x, y, z));
         Ok(())
     }

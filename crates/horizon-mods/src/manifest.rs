@@ -113,9 +113,11 @@ pub enum Capability {
     Menus,
     /// Block models and text the mod shows in the world (server mods).
     Displays,
+    /// Inventories on block entities, shared by every mod (server mods).
+    Items,
 }
 impl Capability {
-    pub const ALL: [Capability; 16] = [
+    pub const ALL: [Capability; 17] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -132,6 +134,7 @@ impl Capability {
         Capability::Energy,
         Capability::Menus,
         Capability::Displays,
+        Capability::Items,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -144,6 +147,7 @@ impl Capability {
                 | Capability::Energy
                 | Capability::Menus
                 | Capability::Displays
+                | Capability::Items
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -165,6 +169,7 @@ impl Capability {
             Capability::Energy => "energy",
             Capability::Menus => "menus",
             Capability::Displays => "displays",
+            Capability::Items => "items",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -180,6 +185,7 @@ impl Capability {
                 | Capability::Energy
                 | Capability::Menus
                 | Capability::Displays
+                | Capability::Items
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -209,6 +215,7 @@ impl Capability {
             }
             Capability::Menus => "open menus of its own for you, and see what you click in them",
             Capability::Displays => "show block models and text of its own in the world",
+            Capability::Items => "keep items in its blocks and move items between any mod's blocks",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -254,6 +261,7 @@ impl fmt::Display for Capability {
             Capability::Energy => "energy",
             Capability::Menus => "menus",
             Capability::Displays => "displays",
+            Capability::Items => "items",
         };
         f.write_str(name)
     }
