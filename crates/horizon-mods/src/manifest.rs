@@ -103,9 +103,12 @@ pub enum Capability {
     /// The recipes and items the game knows, for recipe viewers
     /// (interface `recipes`).
     Recipes,
+    /// Data kept on placed copies of the mod's blocks, saved with the world
+    /// (server mods).
+    BlockEntities,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 13] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -118,12 +121,16 @@ impl Capability {
         Capability::Players,
         Capability::World,
         Capability::Recipes,
+        Capability::BlockEntities,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
         matches!(
             self,
-            Capability::Storage | Capability::Players | Capability::World
+            Capability::Storage
+                | Capability::Players
+                | Capability::World
+                | Capability::BlockEntities
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -141,6 +148,7 @@ impl Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::BlockEntities => "block-entities",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -148,7 +156,11 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
+            Capability::Ui
+                | Capability::Render
+                | Capability::Input
+                | Capability::Recipes
+                | Capability::BlockEntities
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -169,6 +181,9 @@ impl Capability {
             Capability::World => "read and change the world's blocks",
             Capability::Recipes => {
                 "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
+            }
+            Capability::BlockEntities => {
+                "keep its own data on the blocks it claims, saved with the world"
             }
         }
     }
@@ -211,6 +226,7 @@ impl fmt::Display for Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::BlockEntities => "block-entities",
         };
         f.write_str(name)
     }

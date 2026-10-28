@@ -67,6 +67,12 @@ pub(super) struct ModsState {
     /// levels' chunks to read.
     #[cfg(feature = "mods")]
     pub(super) world: bool,
+    /// Capability `block-entities`' store, and the world folder it was read
+    /// from (`None`: not read yet).
+    #[cfg(feature = "mods")]
+    pub(super) block_entities: horizon_mods::BlockEntities,
+    #[cfg(feature = "mods")]
+    pub(super) block_entities_world: Option<PathBuf>,
     /// Blocks server mods set, by dimension, made before that level's next
     /// tick.
     #[cfg(feature = "mods")]

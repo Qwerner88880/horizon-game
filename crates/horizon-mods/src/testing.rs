@@ -33,6 +33,8 @@ pub struct TestGame {
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
     pub world: std::collections::BTreeMap<(i32, i32, i32), String>,
+    /// Capability `block-entities`' store, lent to the mod with the world.
+    pub block_entities: crate::BlockEntities,
 }
 
 /// The world a script's mod reads: [`TestGame::world`], copied for a step.
@@ -120,6 +122,7 @@ impl TestGame {
             names: Vec::new(),
             tick: 0,
             world: Default::default(),
+            block_entities: Default::default(),
         };
         copy_mod(hmod, &copy)?;
         game.start()?;
@@ -168,6 +171,7 @@ impl TestGame {
             self.snapshot();
             self.mods.tick(self.tick);
             self.mods.server_tick(self.tick);
+            self.mods.block_entity_tick(self.tick);
         }
     }
     /// `n` frames, 1/60 s apart.
@@ -240,7 +244,16 @@ impl TestGame {
     /// `player` breaks (or places) `state` at `pos`.
     pub fn block(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str, placed: bool) {
         self.snapshot();
+        if player.dimension == "minecraft:overworld" {
+            let at = (pos.x, pos.y, pos.z);
+            match placed {
+                true => self.world.insert(at, state.to_owned()),
+                false => self.world.remove(&at),
+            };
+        }
         if placed {
+            let at = [pos.x, pos.y, pos.z];
+            self.mods.block_entity_placed(&player.dimension, at, state);
             self.mods.block_placed(player, pos, state);
         } else {
             self.mods.block_broken(player, pos, state);
@@ -529,6 +542,8 @@ impl Step {
         }
         game.mods
             .lend_world(Box::new(ScriptWorld(game.world.clone())));
+        let store = std::mem::take(&mut game.block_entities);
+        game.mods.lend_block_entities(store);
         if let Some(name) = &self.join {
             game.join(name);
         }
@@ -594,7 +609,11 @@ impl Step {
             return Err(format!("{name} is not on the server"));
         }
         game.mods.take_world();
+        if let Some(store) = game.mods.take_block_entities() {
+            game.block_entities = store;
+        }
         let out = game.drain();
+        let claims = game.mods.block_entity_claims();
         for o in &out {
             if let Output::SetBlocks {
                 dimension, blocks, ..
@@ -603,6 +622,8 @@ impl Step {
             {
                 for b in blocks {
                     game.world.insert((b.x, b.y, b.z), b.state.clone());
+                    let at = [b.x, b.y, b.z];
+                    crate::claim(&mut game.block_entities, &claims, dimension, at, &b.state);
                 }
             }
         }

@@ -48,6 +48,7 @@ impl Game<'_> {
         false
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
+    pub(super) fn save_mod_block_entities(&mut self) {}
 }
 
 #[cfg(feature = "mods")]
@@ -301,6 +302,8 @@ mod run {
                             z: pos[2],
                         };
                         if placed {
+                            let at = [pos.x, pos.y, pos.z];
+                            self.mods.mods.block_entity_placed(&p.dimension, at, &state);
                             self.mods.mods.block_placed(&p, pos, &state);
                         } else {
                             self.mods.mods.block_broken(&p, pos, &state);
@@ -309,6 +312,7 @@ mod run {
                 }
             }
             self.mods.mods.server_tick(self.ticks);
+            self.mods.mods.block_entity_tick(self.ticks);
             self.return_world();
             self.mods.players = players;
             self.show_mod_output();
@@ -346,10 +350,39 @@ mod run {
                 biomes,
                 dims,
             }));
+            self.read_mod_block_entities();
+            let store = std::mem::take(&mut self.mods.block_entities);
+            self.mods.mods.lend_block_entities(store);
+        }
+
+        /// Reads capability `block-entities`' store from the world folder,
+        /// once per world.
+        fn read_mod_block_entities(&mut self) {
+            if self.world_root.as_os_str().is_empty()
+                || self.mods.block_entities_world.as_ref() == Some(&self.world_root)
+            {
+                return;
+            }
+            self.mods.block_entities = horizon_mods::BlockEntities::load(&self.world_root);
+            self.mods.block_entities_world = Some(self.world_root.clone());
+        }
+
+        /// Saves capability `block-entities`' store with the world, when it
+        /// changed.
+        pub(in crate::game) fn save_mod_block_entities(&mut self) {
+            if self.mods.block_entities_world.as_ref() != Some(&self.world_root) {
+                return;
+            }
+            if let Err(e) = self.mods.block_entities.save(&self.world_root) {
+                log::warn!("Horizon: saving the mods' block entities: {e}");
+            }
         }
 
         /// Puts back the chunks [`Game::lend_world`] lent.
         fn return_world(&mut self) {
+            if let Some(store) = self.mods.mods.take_block_entities() {
+                self.mods.block_entities = store;
+            }
             let Some(view) = self.mods.mods.take_world() else {
                 return;
             };
@@ -380,6 +413,10 @@ mod run {
                 .partition(|(d, _)| d == dim);
             self.mods.block_writes = later;
             let registry = self.pack.assets.registry;
+            let claims = self.mods.mods.block_entity_claims();
+            if !claims.is_empty() {
+                self.read_mod_block_entities();
+            }
             for (_, b) in now {
                 let state = match crate::game::render_control::parse_state(registry, &b.state) {
                     Ok(state) => state,
@@ -388,13 +425,20 @@ mod run {
                         continue;
                     }
                 };
-                if let Err(e) = self.place_state([b.x, b.y, b.z], state, false) {
-                    log::debug!(
+                match self.place_state([b.x, b.y, b.z], state, false) {
+                    Ok(_) => horizon_mods::claim(
+                        &mut self.mods.block_entities,
+                        &claims,
+                        dim,
+                        [b.x, b.y, b.z],
+                        &b.state,
+                    ),
+                    Err(e) => log::debug!(
                         "Horizon: a server mod's block at {} {} {}: {e:?}",
                         b.x,
                         b.y,
                         b.z
-                    );
+                    ),
                 }
             }
         }

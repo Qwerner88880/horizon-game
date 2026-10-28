@@ -1,0 +1,35 @@
+# A placed lodestone becomes a cell that charges each tick; /cell reads it; breaking it says what was lost.
+
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 20
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+[[step]]
+command = "cell 5 63 5"
+expect.error = "No cell there"
+
+# The block a cell stood on is checked at the next tick.
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+expect.broadcast = ["The cell at 0 63 0 is gone with 100 FE"]
+
+[[step]]
+command = "cell"
+expect.error = "No cell there"
+
+# Any other block placed is not a cell.
+[[step]]
+place = { x = 0, y = 63, z = 0, state = "minecraft:stone" }
+
+[[step]]
+ticks = 5
+command = "cell"
+expect.error = "No cell there"

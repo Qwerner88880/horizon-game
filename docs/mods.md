@@ -568,6 +568,35 @@ items or block states yet, and `^` coordinates; in-frame single player's chat
 box lists server mods' commands by name only (the server still parses their
 arguments).
 
+#### Block entities (capability `block-entities`, experimental)
+
+A server mod keeps bytes of its own on each placed copy of the blocks it
+claims: a machine's energy, a counter, an inventory it encodes itself. The
+example `crates/horizon-mod-sdk/examples/cells` makes every lodestone an
+energy cell.
+
+```toml
+capabilities = ["block-entities"]
+experimental = ["block-entities"]
+```
+
+- **Claims.** `ServerMod::block_entity_blocks` names the blocks, once after
+  `init` (up to 256, block ids without properties). Two mods may claim the
+  same block: each keeps its own data on it.
+- **Life.** A block entity starts empty when a player places a claimed block
+  or a server mod sets one with `world.set-blocks`, and goes when the block
+  there is no longer a claimed one, checked each tick in loaded chunks:
+  `block_entity_removed` gets its last data. Unloaded chunks keep theirs.
+- **Ticks.** `block_entity_tick` gets every block entity of the mod in loaded
+  chunks each tick, after `tick`, with its state and data.
+- **Data.** `block_entities::get` and `set` read and replace the data at a
+  position, up to 16 KiB each and 65,536 block entities per mod. The game
+  saves them with the world in `data/horizon/block_entities.json`.
+
+**Not yet.** Blocks set by `/setblock`, pistons, explosions placing blocks or
+structures don't make block entities; a server mod can't add blocks of its
+own (a content mod can, and a server mod may claim them).
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is

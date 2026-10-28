@@ -19,6 +19,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read and change the world's blocks |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
+| `block-entities` | [`block-entities`](#block-entities) | keep its own data on the blocks it claims, saved with the world |
 
 ## World `horizon-mod`
 
@@ -33,6 +34,20 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 - Imports (what the game offers): `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `server-events`
+
+## World `horizon-block-mod`
+
+A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
+
+- Imports (what the game offers): `block-entities`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `server-events`
+
+## World `block-entity-host`
+
+The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
+
+- Imports (what the game offers): `block-entities`
+- Exports (what the mod provides): `block-entity-events`
 
 ## World `horizon-ui-mod`
 
@@ -686,6 +701,40 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
+
+## `block-entities`
+
+Access: capability `block-entities`.
+
+Capability `block-entities`, server mods only (manifest `api = "0.3"`, experimental): bytes the mod keeps on each placed copy of the blocks it claims (`block-entity-events.blocks`), saved with the world. A block entity starts empty when a player places one of those blocks or the mod sets one with `world.set-blocks`, and goes when its block does.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `get` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<list<u8>>` | The data of the mod's block entity at a position: none where it has none. |
+| `set` | `func(dimension: string, x: s32, y: s32, z: s32, data: list<u8>) -> result<_, string>` | Replaces the data of the mod's block entity at a position: an error where it has none, or for more than 16 KiB. |
+
+## `block-entity-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `block-entities`. A server mod built before it has no such export and keeps working.
+
+### record `block-entity`
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` | `minecraft:overworld`, ... |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `state` | `string` | The block there now, as `minecraft:oak_log[axis=y]`. |
+| `data` | `list<u8>` | What the mod last stored on it: empty for a new one. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `blocks` | `func() -> list<string>` | Once, after `init`: the blocks (`minecraft:lodestone`, a content mod's `mymod:battery`) whose placed copies get the mod's block entities. None: the other hooks are never called. |
+| `tick` | `func(tick: u64, entities: list<block-entity>)` | Each server tick: the mod's block entities in loaded chunks, after `tick`. |
+| `removed` | `func(entity: block-entity)` | A block entity's block is gone (broken, replaced, blown up): its last data, with what stands there now. |
 
 ## `server-events`
 

@@ -66,6 +66,19 @@ pub use ui_bindings::horizon::mods::ui::{
     ButtonWidget, ItemWidget, ListWidget, Screen as UiScreen, TextWidget, Widget as UiWidget,
 };
 use ui_bindings::{UiHost, horizon::mods::ui};
+/// Capability `block-entities`' world beyond `horizon-server-mod`: a second
+/// world, so server mods built before it (no `block-entity-events` export)
+/// still instantiate and simply keep no block entities.
+mod block_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "block-entity-host",
+    });
+}
+pub use block_bindings::exports::horizon::mods::block_entity_events::BlockEntity;
+use block_bindings::{BlockEntityHost, horizon::mods::block_entities};
+/// Claimed blocks a mod may list (`block-entity-events.blocks`).
+const CLAIMED_BLOCKS: usize = 256;
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
 mod render_bindings {
     wasmtime::component::bindgen!({
@@ -265,6 +278,8 @@ pub trait WorldView: std::any::Any + Send {
 
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
+/// Capability `block-entities`' store, lent like the world.
+type EntitySlot = Arc<Mutex<Option<crate::BlockEntities>>>;
 
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
@@ -318,6 +333,8 @@ struct Running {
     raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
+    /// Capability `block-entities`: the export and the blocks it claims.
+    blocks: Option<(BlockEntityHost, Vec<String>)>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -427,6 +444,7 @@ struct State {
     storage_budget: u64,
     limits: StoreLimits,
     world: WorldSlot,
+    entities: EntitySlot,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -438,6 +456,7 @@ pub struct Mods {
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     world: WorldSlot,
+    entities: EntitySlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -448,15 +467,27 @@ impl Mods {
     pub fn generation(&self) -> u64 {
         self.generation
     }
-    /// Whether a running mod may use capability `world`: only then is a
-    /// view worth lending.
+    /// Whether a running mod may use capability `world`, or keeps block
+    /// entities (checked against the world each tick): only then is a view
+    /// worth lending.
     pub fn wants_world(&self) -> bool {
         self.entries.iter().any(|e| {
             e.status == Status::Running
-                && e.manifest
-                    .as_ref()
-                    .is_some_and(|m| m.capabilities.contains(&crate::Capability::World))
+                && (e.run.as_ref().is_some_and(|r| r.blocks.is_some())
+                    || e.manifest
+                        .as_ref()
+                        .is_some_and(|m| m.capabilities.contains(&crate::Capability::World)))
         })
+    }
+    /// `state` was placed at `pos`: each running mod claiming its block gets
+    /// a new block entity there, in the lent store.
+    pub fn block_entity_placed(&mut self, dimension: &str, pos: [i32; 3], state: &str) {
+        let Ok(mut slot) = self.entities.lock() else {
+            return;
+        };
+        if let Some(store) = slot.as_mut() {
+            claim(store, &self.block_entity_claims(), dimension, pos, state);
+        }
     }
     /// Lends the game's world to capability `world` for the calls until
     /// [`Mods::take_world`]; with none lent, `get-block` finds nothing and
@@ -469,6 +500,100 @@ impl Mods {
     /// The view [`Mods::lend_world`] lent, back to the game.
     pub fn take_world(&mut self) -> Option<Box<dyn WorldView>> {
         self.world.lock().ok()?.take()
+    }
+    /// Lends the world's block entities to capability `block-entities` for
+    /// the calls until [`Mods::take_block_entities`].
+    pub fn lend_block_entities(&mut self, store: crate::BlockEntities) {
+        if let Ok(mut slot) = self.entities.lock() {
+            *slot = Some(store);
+        }
+    }
+    /// The store [`Mods::lend_block_entities`] lent, back to the game.
+    pub fn take_block_entities(&mut self) -> Option<crate::BlockEntities> {
+        self.entities.lock().ok()?.take()
+    }
+    /// Each running mod with block entities: its id and the blocks it claims.
+    pub fn block_entity_claims(&self) -> Vec<(String, Vec<String>)> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let run = e.run.as_ref()?;
+                let (_, blocks) = run.blocks.as_ref()?;
+                Some((run.store.data().id.clone(), blocks.clone()))
+            })
+            .collect()
+    }
+    /// After the server mods' `tick`: drops the block entities whose block
+    /// is gone (calling `removed`), then gives each mod its block entities
+    /// in loaded chunks. Needs the world and the store lent.
+    pub fn block_entity_tick(&mut self, tick: u64) {
+        for i in 0..self.entries.len() {
+            let Some(run) = self.entries[i].run.as_ref() else {
+                continue;
+            };
+            let Some((_, claimed)) = run.blocks.as_ref() else {
+                continue;
+            };
+            let id = run.store.data().id.clone();
+            let Some((live, gone)) = self.sort_block_entities(&id, claimed) else {
+                return;
+            };
+            for e in gone {
+                self.call(i, FUEL_EVENT, |run| match &run.blocks {
+                    Some((h, _)) => h
+                        .horizon_mods_block_entity_events()
+                        .call_removed(&mut run.store, &e),
+                    None => Ok(()),
+                });
+            }
+            if !live.is_empty() {
+                self.call(i, FUEL_TICK, |run| match &run.blocks {
+                    Some((h, _)) => {
+                        h.horizon_mods_block_entity_events()
+                            .call_tick(&mut run.store, tick, &live)
+                    }
+                    None => Ok(()),
+                });
+            }
+        }
+    }
+    /// Mod `id`'s block entities in loaded chunks: those whose block is still
+    /// one it claims, and those whose block is gone (removed from the store
+    /// here). `None` when the world or the store isn't lent.
+    fn sort_block_entities(
+        &self,
+        id: &str,
+        claimed: &[String],
+    ) -> Option<(Vec<BlockEntity>, Vec<BlockEntity>)> {
+        let world = self.world.lock().ok()?;
+        let world = world.as_ref()?;
+        let mut entities = self.entities.lock().ok()?;
+        let store = entities.as_mut()?;
+        let (mut live, mut gone) = (Vec::new(), Vec::new());
+        for ((dimension, [x, y, z]), data) in store.of(id) {
+            // An unloaded chunk keeps its block entities, untouched.
+            let Some(state) = world.block(dimension, *x, *y, *z) else {
+                continue;
+            };
+            let entity = BlockEntity {
+                dimension: dimension.clone(),
+                x: *x,
+                y: *y,
+                z: *z,
+                data: data.to_vec(),
+                state,
+            };
+            let name = crate::block_entities::block_name(&entity.state);
+            if claimed.iter().any(|c| c == name) {
+                live.push(entity);
+            } else {
+                gone.push(entity);
+            }
+        }
+        for e in &gone {
+            store.remove(id, &(e.dimension.clone(), [e.x, e.y, e.z]));
+        }
+        Some((live, gone))
     }
 
     /// Reads every mod at `paths` and starts those `enabled` says are on,
@@ -548,6 +673,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            BlockEntityHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -587,6 +714,7 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
+        let entities = self.entities.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -628,6 +756,7 @@ impl Mods {
                 .instances(16)
                 .build(),
             world,
+            entities,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -676,6 +805,24 @@ impl Mods {
                 }
             }
         }
+        // `block-entity-events` is a server mod built since capability
+        // `block-entities`; its claims count only with the capability.
+        let mut blocks = None;
+        if server
+            && m.capabilities.contains(&crate::Capability::BlockEntities)
+            && let Ok(host) = BlockEntityHost::new(&mut store, &instance)
+        {
+            store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+            let mut claimed = host
+                .horizon_mods_block_entity_events()
+                .call_blocks(&mut store)
+                .map_err(|e| reason(&e))?;
+            claimed.truncate(CLAIMED_BLOCKS);
+            claimed.retain(|b| b.contains(':') && !b.contains('['));
+            if !claimed.is_empty() {
+                blocks = Some((host, claimed));
+            }
+        }
         self.generation += 1;
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
@@ -684,6 +831,7 @@ impl Mods {
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            blocks,
         }))
     }
 
@@ -1593,6 +1741,30 @@ impl mod_world::Host for State {
         Ok(())
     }
 }
+impl block_entities::Host for State {
+    fn get(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<Vec<u8>> {
+        let slot = self.entities.lock().ok()?;
+        let data = slot.as_ref()?.get(&self.id, &(dimension, [x, y, z]))?;
+        Some(data.to_vec())
+    }
+    fn set(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        let mut slot = self
+            .entities
+            .lock()
+            .map_err(|_| "block entities are unavailable".to_string())?;
+        let store = slot
+            .as_mut()
+            .ok_or("block entities are kept only during server hooks")?;
+        store.set(&self.id, &(dimension, [x, y, z]), data)
+    }
+}
 impl players::Host for State {
     fn online(&mut self) -> Vec<ServerPlayer> {
         self.snapshot.players.clone()
@@ -1956,6 +2128,23 @@ impl storage::Host for State {
     fn delete(&mut self, key: String) {
         if storage_key_ok(&key) {
             let _ = std::fs::remove_file(self.data_dir.join(&key));
+        }
+    }
+}
+
+/// Gives a new block entity at `pos` to each mod in `claims` that claims
+/// `state`'s block.
+pub fn claim(
+    store: &mut crate::BlockEntities,
+    claims: &[(String, Vec<String>)],
+    dimension: &str,
+    pos: [i32; 3],
+    state: &str,
+) {
+    let name = crate::block_entities::block_name(state);
+    for (id, blocks) in claims {
+        if blocks.iter().any(|b| b == name) {
+            store.create(id, (dimension.to_owned(), pos));
         }
     }
 }

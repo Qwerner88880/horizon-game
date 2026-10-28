@@ -184,7 +184,7 @@ macro_rules! export_mod {
 pub mod server {
     wit_bindgen::generate!({
         path: "wit",
-        world: "horizon-server-mod",
+        world: "horizon-block-mod",
         pub_export_macro: true,
         export_macro_name: "__export_horizon_server_mod",
         default_bindings_module: "horizon_mod_sdk::server",
@@ -194,10 +194,12 @@ pub mod server {
         },
     });
 
+    pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
         ServerCommand,
     };
+    pub use horizon::mods::block_entities;
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange};
 
@@ -228,6 +230,19 @@ pub mod server {
         /// When [`Registration::blocks`] is set: `state` is what was there.
         fn block_broken(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
         fn block_placed(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
+        /// Capability `block-entities`: the blocks (`minecraft:lodestone`)
+        /// whose placed copies get this mod's block entities. Asked once,
+        /// after [`ServerMod::init`].
+        fn block_entity_blocks() -> Vec<String> {
+            Vec::new()
+        }
+        /// Each server tick, after [`ServerMod::tick`]: the mod's block
+        /// entities in loaded chunks. Change one with
+        /// [`block_entities::set`].
+        fn block_entity_tick(&mut self, _tick: u64, _entities: &[BlockEntity]) {}
+        /// A block entity's block is gone: its last data, with what stands
+        /// there now.
+        fn block_entity_removed(&mut self, _entity: &BlockEntity) {}
     }
 
     impl Registration {
@@ -436,6 +451,17 @@ macro_rules! export_server_mod {
                 }
                 fn block_placed(player: Player, pos: BlockPos, state: String) {
                     with(|m| m.block_placed(&player, pos, &state))
+                }
+            }
+            impl $crate::server::__BlockGuest for Export {
+                fn blocks() -> Vec<String> {
+                    <$t as ServerMod>::block_entity_blocks()
+                }
+                fn tick(tick: u64, entities: Vec<$crate::server::BlockEntity>) {
+                    with(|m| m.block_entity_tick(tick, &entities))
+                }
+                fn removed(entity: $crate::server::BlockEntity) {
+                    with(|m| m.block_entity_removed(&entity))
                 }
             }
             #[cfg(target_arch = "wasm32")]

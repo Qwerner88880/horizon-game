@@ -691,6 +691,46 @@ interface %world {
     set-blocks: func(dimension: string, blocks: list<block-change>) -> result<_, string>;
 }
 
+/// Capability `block-entities`, server mods only (manifest `api = "0.3"`,
+/// experimental): bytes the mod keeps on each placed copy of the blocks it
+/// claims (`block-entity-events.blocks`), saved with the world. A block
+/// entity starts empty when a player places one of those blocks or the mod
+/// sets one with `world.set-blocks`, and goes when its block does.
+interface block-entities {
+    /// The data of the mod's block entity at a position: none where it has
+    /// none.
+    get: func(dimension: string, x: s32, y: s32, z: s32) -> option<list<u8>>;
+    /// Replaces the data of the mod's block entity at a position: an error
+    /// where it has none, or for more than 16 KiB.
+    set: func(dimension: string, x: s32, y: s32, z: s32, data: list<u8>) -> result<_, string>;
+}
+
+/// What the server calls in a server mod with capability `block-entities`.
+/// A server mod built before it has no such export and keeps working.
+interface block-entity-events {
+    record block-entity {
+        /// `minecraft:overworld`, ...
+        dimension: string,
+        x: s32,
+        y: s32,
+        z: s32,
+        /// The block there now, as `minecraft:oak_log[axis=y]`.
+        state: string,
+        /// What the mod last stored on it: empty for a new one.
+        data: list<u8>,
+    }
+    /// Once, after `init`: the blocks (`minecraft:lodestone`, a content
+    /// mod's `mymod:battery`) whose placed copies get the mod's block
+    /// entities. None: the other hooks are never called.
+    blocks: func() -> list<string>;
+    /// Each server tick: the mod's block entities in loaded chunks, after
+    /// `tick`.
+    tick: func(tick: u64, entities: list<block-entity>);
+    /// A block entity's block is gone (broken, replaced, blown up): its last
+    /// data, with what stands there now.
+    removed: func(entity: block-entity);
+}
+
 /// What the server calls in a server mod (manifest `api = "0.3"`,
 /// experimental). Only the hooks `init` asks for are ever called. The player
 /// in each event is as the server saw them when it happened.
@@ -803,6 +843,21 @@ world horizon-server-mod {
     import players;
     import %world;
     export server-events;
+}
+
+/// A server mod with block entities (capability `block-entities`): the SDK
+/// builds every server mod against this world. Mods built for
+/// `horizon-server-mod` alone still load and simply keep none.
+world horizon-block-mod {
+    include horizon-server-mod;
+    import block-entities;
+    export block-entity-events;
+}
+
+/// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
+world block-entity-host {
+    import block-entities;
+    export block-entity-events;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against
