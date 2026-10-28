@@ -1296,6 +1296,7 @@ impl Game<'_> {
                     });
                 }
             }
+            S::ContainerClick(p) if self.lan_mod_menu_click(host, conn, &p) => {}
             S::ContainerClick(p) if self.lan_merchant_click(host, conn, &p) => {}
             S::ContainerClick(p) if self.lan_inventory_click(host, conn, &p) => {}
             S::ContainerClick(p) if self.lan_crafting_click(host, conn, &p) => {}
@@ -1323,6 +1324,7 @@ impl Game<'_> {
             }
             S::SetBeacon(p) => self.lan_station_beacon(host, conn, p.primary, p.secondary),
             S::SelectTrade(p) => self.lan_select_trade(host, conn, p.item),
+            S::ContainerClose(p) if self.lan_mod_menu_closed(conn, p.container) => {}
             S::ContainerClose(p) if self.lan_merchant_closed(host, conn, Some(p.container)) => {
                 self.guest_carried_back(host, gi);
             }

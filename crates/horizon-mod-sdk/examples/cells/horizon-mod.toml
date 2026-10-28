@@ -1,9 +1,9 @@
 id = "cells"
 name = "Energy Cells"
 version = "0.1.0"
-description = "Every lodestone a player places becomes an energy cell: an energy buffer any mod can fill or drain. It charges itself, shares its energy with the cells beside it and keeps it when the world is saved. /cell [pos] reads one."
+description = "Every lodestone a player places becomes an energy cell: an energy buffer any mod can fill or drain. It charges itself, shares its energy with the cells beside it and keeps it when the world is saved. /cell [pos] reads one; /cellgui [pos] opens its menu."
 authors = ["Horizon"]
 api = "0.3"
 side = "server"
-capabilities = ["players", "block-entities", "energy"]
-experimental = ["block-entities", "energy"]
+capabilities = ["players", "block-entities", "energy", "menus"]
+experimental = ["block-entities", "energy", "menus"]

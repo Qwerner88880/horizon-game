@@ -241,6 +241,26 @@ impl TestGame {
         self.snapshot();
         self.mods.server_command(player, line)
     }
+    /// `player` clicks slot `slot` of the mod's menu `menu` (capability
+    /// `menus`).
+    pub fn menu_click(
+        &mut self,
+        player: &ServerPlayer,
+        menu: &str,
+        slot: u32,
+        button: u8,
+        shift: bool,
+    ) {
+        self.snapshot();
+        let id = self.mods.entries()[0]
+            .manifest
+            .as_ref()
+            .map(|m| m.id.clone());
+        if let Some(id) = id {
+            self.mods
+                .menu_clicked(&id, player, menu, slot, button, shift);
+        }
+    }
     /// `player` breaks (or places) `state` at `pos`.
     pub fn block(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str, placed: bool) {
         self.snapshot();
@@ -357,6 +377,18 @@ impl From<Mode> for GameMode {
 }
 
 /// A block a player breaks or places.
+/// A click in the mod's menu (capability `menus`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClickSet {
+    menu: String,
+    slot: u32,
+    #[serde(default)]
+    button: u8,
+    #[serde(default)]
+    shift: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockSet {
@@ -404,6 +436,8 @@ pub struct Step {
     #[serde(rename = "break")]
     broken: Option<BlockSet>,
     place: Option<BlockSet>,
+    /// Server mods: the player clicks the mod's menu, before `command`.
+    click: Option<ClickSet>,
     /// Blocks of the Overworld before the rest of the step (capability
     /// `world`); every other block is air.
     #[serde(default)]
@@ -562,7 +596,8 @@ impl Step {
             || self.chat.is_some()
             || self.command.is_some()
             || self.broken.is_some()
-            || self.place.is_some();
+            || self.place.is_some()
+            || self.click.is_some();
         let actor = if server && acts {
             Some(actor(game)?)
         } else {
@@ -588,6 +623,9 @@ impl Step {
                 Some(p) => game.player_chat(p, line),
                 None => game.chat(line),
             }
+        }
+        if let (Some(c), Some(p)) = (&self.click, &who) {
+            game.menu_click(p, &c.menu, c.slot, c.button, c.shift);
         }
         let owned = self.command.as_ref().map(|line| match &who {
             Some(p) => game.player_command(p, line),

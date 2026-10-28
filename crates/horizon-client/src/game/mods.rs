@@ -73,6 +73,9 @@ pub(super) struct ModsState {
     pub(super) block_entities: horizon_mods::BlockEntities,
     #[cfg(feature = "mods")]
     pub(super) block_entities_world: Option<PathBuf>,
+    /// Capability `menus`: the server mods' menus open for connections.
+    #[cfg(feature = "mods")]
+    pub(super) menus: Vec<super::server_mods::ModMenu>,
     /// Blocks server mods set, by dimension, made before that level's next
     /// tick.
     #[cfg(feature = "mods")]
@@ -710,7 +713,10 @@ impl Game<'_> {
                 server @ (Output::Tell { .. }
                 | Output::Broadcast { .. }
                 | Output::Reply { .. }
-                | Output::SetBlocks { .. }) => {
+                | Output::SetBlocks { .. }
+                | Output::OpenMenu { .. }
+                | Output::SetMenuItems { .. }
+                | Output::CloseMenu { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
                     continue;
                 }

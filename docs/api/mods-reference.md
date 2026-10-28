@@ -21,6 +21,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 | `block-entities` | [`block-entities`](#block-entities) | keep its own data on the blocks it claims, saved with the world |
 | `energy` | [`energy`](#energy) | store energy in its blocks and move energy between any mod's blocks |
+| `menus` | [`menus`](#menus) | open menus of its own for you, and see what you click in them |
 
 ## World `horizon-mod`
 
@@ -40,8 +41,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `server-events`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -49,6 +50,13 @@ The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
 
 - Imports (what the game offers): `block-entities`, `energy`
 - Exports (what the mod provides): `block-entity-events`
+
+## World `menu-host`
+
+The game's side of capability `menus`: a world of its own, so server mods built before it (no `menu-events` export) still load.
+
+- Imports (what the game offers): `players`, `menus`
+- Exports (what the mod provides): `menu-events`
 
 ## World `horizon-ui-mod`
 
@@ -737,6 +745,42 @@ Capability `energy`, server mods only (manifest `api = "0.3"`, experimental): en
 | `insert` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Puts up to `amount` in the buffer at a position, as far as its `max-receive` and room allow: what went in (0 where there is none). `simulate`: only says. |
 | `extract` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Takes up to `amount` from the buffer at a position, as far as its `max-extract` and what it stores allow: what came out. |
 | `push` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64` | Moves up to `amount` from the mod's own buffer at a position into the buffers on its six sides, shared evenly, each as far as it takes: what moved. |
+
+## `menus`
+
+Access: capability `menus`.
+
+Capability `menus`, server mods only (manifest `api = "0.3"`, experimental): chest menus the mod opens for a player, with items of its own in the slots. Players see and click them but can't take the items; each click reaches `menu-events.clicked`. Any client shows them, vanilla's too, as they are vanilla's chest menus (`minecraft:generic_9x<rows>`).
+
+### record `menu-item`
+
+| Field | Type | |
+| --- | --- | --- |
+| `slot` | `u32` | From 0, left to right then top to bottom. |
+| `item` | `string` | `minecraft:redstone`, ... |
+| `count` | `u32` |  |
+| `components` | `string` | Components beyond the item's own, in vanilla's item syntax: `[custom_name={text:"Energy",italic:false}]`; empty for none. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `open` | `func(player: string, menu: string, title: string, rows: u32, items: list<menu-item>) -> result<_, string>` | Opens a menu of `rows` rows (1 to 6) titled `title` for the player with this id, closing the menu they had open; `menu` is the mod's own name for it, given back with each click. Slots no item names are empty. An error for a player not on the server, rows out of range or a slot past the last, or for the window's own player in in-frame single player (not yet). |
+| `set-items` | `func(player: string, menu: string, items: list<menu-item>) -> result<_, string>` | Replaces every slot of the player's menu `menu` of this mod, while it is open: an error where it isn't. |
+| `close` | `func(player: string)` | Closes the player's menu of this mod, if one is open. |
+
+## `menu-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `menus`.
+
+### type `player`
+
+`type player = player`
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `clicked` | `func(player: player, menu: string, slot: u32, button: u8, shift: bool)` | The player clicked slot `slot` of the mod's open menu `menu` (only the menu's own slots, not their inventory's): `button` 0 left, 1 right; `shift` held. The menu shows the mod's items again after it. |
+| `closed` | `func(player: player, menu: string)` | The player closed the mod's menu `menu` (or left the server). |
 
 ## `block-entity-events`
 

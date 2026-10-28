@@ -108,9 +108,12 @@ pub enum Capability {
     BlockEntities,
     /// Energy buffers on block entities, shared by every mod (server mods).
     Energy,
+    /// Chest menus the mod opens for players, with its own items (server
+    /// mods).
+    Menus,
 }
 impl Capability {
-    pub const ALL: [Capability; 14] = [
+    pub const ALL: [Capability; 15] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -125,6 +128,7 @@ impl Capability {
         Capability::Recipes,
         Capability::BlockEntities,
         Capability::Energy,
+        Capability::Menus,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -135,6 +139,7 @@ impl Capability {
                 | Capability::World
                 | Capability::BlockEntities
                 | Capability::Energy
+                | Capability::Menus
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -154,6 +159,7 @@ impl Capability {
             Capability::Recipes => "recipes",
             Capability::BlockEntities => "block-entities",
             Capability::Energy => "energy",
+            Capability::Menus => "menus",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -167,6 +173,7 @@ impl Capability {
                 | Capability::Recipes
                 | Capability::BlockEntities
                 | Capability::Energy
+                | Capability::Menus
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -194,6 +201,7 @@ impl Capability {
             Capability::Energy => {
                 "store energy in its blocks and move energy between any mod's blocks"
             }
+            Capability::Menus => "open menus of its own for you, and see what you click in them",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -237,6 +245,7 @@ impl fmt::Display for Capability {
             Capability::Recipes => "recipes",
             Capability::BlockEntities => "block-entities",
             Capability::Energy => "energy",
+            Capability::Menus => "menus",
         };
         f.write_str(name)
     }

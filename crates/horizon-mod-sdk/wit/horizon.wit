@@ -742,6 +742,47 @@ interface energy {
     push: func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64;
 }
 
+/// Capability `menus`, server mods only (manifest `api = "0.3"`,
+/// experimental): chest menus the mod opens for a player, with items of its
+/// own in the slots. Players see and click them but can't take the items;
+/// each click reaches `menu-events.clicked`. Any client shows them, vanilla's
+/// too, as they are vanilla's chest menus (`minecraft:generic_9x<rows>`).
+interface menus {
+    record menu-item {
+        /// From 0, left to right then top to bottom.
+        slot: u32,
+        /// `minecraft:redstone`, ...
+        item: string,
+        count: u32,
+        /// Components beyond the item's own, in vanilla's item syntax:
+        /// `[custom_name={text:"Energy",italic:false}]`; empty for none.
+        components: string,
+    }
+    /// Opens a menu of `rows` rows (1 to 6) titled `title` for the player
+    /// with this id, closing the menu they had open; `menu` is the mod's own
+    /// name for it, given back with each click. Slots no item names are
+    /// empty. An error for a player not on the server, rows out of range or
+    /// a slot past the last, or for the window's own player in in-frame
+    /// single player (not yet).
+    open: func(player: string, menu: string, title: string, rows: u32, items: list<menu-item>) -> result<_, string>;
+    /// Replaces every slot of the player's menu `menu` of this mod, while it
+    /// is open: an error where it isn't.
+    set-items: func(player: string, menu: string, items: list<menu-item>) -> result<_, string>;
+    /// Closes the player's menu of this mod, if one is open.
+    close: func(player: string);
+}
+
+/// What the server calls in a server mod with capability `menus`.
+interface menu-events {
+    use players.{player};
+    /// The player clicked slot `slot` of the mod's open menu `menu` (only
+    /// the menu's own slots, not their inventory's): `button` 0 left, 1
+    /// right; `shift` held. The menu shows the mod's items again after it.
+    clicked: func(player: player, menu: string, slot: u32, button: u8, shift: bool);
+    /// The player closed the mod's menu `menu` (or left the server).
+    closed: func(player: player, menu: string);
+}
+
 /// What the server calls in a server mod with capability `block-entities`.
 /// A server mod built before it has no such export and keeps working.
 interface block-entity-events {
@@ -889,7 +930,9 @@ world horizon-block-mod {
     include horizon-server-mod;
     import block-entities;
     import energy;
+    import menus;
     export block-entity-events;
+    export menu-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -897,6 +940,14 @@ world block-entity-host {
     import block-entities;
     import energy;
     export block-entity-events;
+}
+
+/// The game's side of capability `menus`: a world of its own, so server
+/// mods built before it (no `menu-events` export) still load.
+world menu-host {
+    import players;
+    import menus;
+    export menu-events;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

@@ -9,6 +9,29 @@ ticks = 20
 command = "cell"
 expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
 
+# The menu: Fill puts 1000 FE in, Drain takes 1000 out, the other slots do nothing.
+[[step]]
+command = "cellgui"
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1100 / 100000 FE"
+
+[[step]]
+click = { menu = "cell", slot = 11 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+[[step]]
+click = { menu = "cell", slot = 0 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+[[step]]
+command = "cellgui 5 63 5"
+expect.error = "No cell there"
+
 [[step]]
 command = "cell 5 63 5"
 expect.error = "No cell there"

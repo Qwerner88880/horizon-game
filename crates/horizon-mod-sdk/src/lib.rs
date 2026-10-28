@@ -195,12 +195,14 @@ pub mod server {
     });
 
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
+    pub use exports::horizon::mods::menu_events::Guest as __MenuGuest;
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
         ServerCommand,
     };
     pub use horizon::mods::block_entities;
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
+    pub use horizon::mods::menus::{self, MenuItem};
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange};
 
@@ -244,6 +246,52 @@ pub mod server {
         /// A block entity's block is gone: its last data, with what stands
         /// there now.
         fn block_entity_removed(&mut self, _entity: &BlockEntity) {}
+        /// Capability `menus`: `player` clicked slot `slot` of the mod's
+        /// open menu `menu` (`button` 0 left, 1 right).
+        fn menu_clicked(
+            &mut self,
+            _player: &Player,
+            _menu: &str,
+            _slot: u32,
+            _button: u8,
+            _shift: bool,
+        ) {
+        }
+        /// `player` closed the mod's menu `menu`.
+        fn menu_closed(&mut self, _player: &Player, _menu: &str) {}
+    }
+
+    impl MenuItem {
+        /// `count` of `item` in slot `slot`, with no components.
+        pub fn new(slot: u32, item: &str, count: u32) -> Self {
+            Self {
+                slot,
+                item: item.into(),
+                count,
+                components: String::new(),
+            }
+        }
+        /// Shows `name` as the item's name, not in italics, and `lore` below
+        /// it, in grey.
+        pub fn named(mut self, name: &str, lore: &[&str]) -> Self {
+            let text = |t: &str| {
+                let t = t.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("{{text:\"{t}\",italic:false}}")
+            };
+            let mut components = format!("custom_name={}", text(name));
+            if !lore.is_empty() {
+                let lines: Vec<String> = lore
+                    .iter()
+                    .map(|l| {
+                        let t = l.replace('\\', "\\\\").replace('"', "\\\"");
+                        format!("{{text:\"{t}\",italic:false,color:\"gray\"}}")
+                    })
+                    .collect();
+                components.push_str(&format!(",lore=[{}]", lines.join(",")));
+            }
+            self.components = format!("[{components}]");
+            self
+        }
     }
 
     impl Registration {
@@ -452,6 +500,14 @@ macro_rules! export_server_mod {
                 }
                 fn block_placed(player: Player, pos: BlockPos, state: String) {
                     with(|m| m.block_placed(&player, pos, &state))
+                }
+            }
+            impl $crate::server::__MenuGuest for Export {
+                fn clicked(player: Player, menu: String, slot: u32, button: u8, shift: bool) {
+                    with(|m| m.menu_clicked(&player, &menu, slot, button, shift))
+                }
+                fn closed(player: Player, menu: String) {
+                    with(|m| m.menu_closed(&player, &menu))
                 }
             }
             impl $crate::server::__BlockGuest for Export {

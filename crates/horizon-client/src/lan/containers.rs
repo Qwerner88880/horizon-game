@@ -289,6 +289,43 @@ impl Hub {
         Some(window)
     }
 
+    /// A server mod's chest menu (capability `menus`): a window of `rows`
+    /// rows with nothing of the game's behind it. Its id, or None when the
+    /// guest or the menu type is unknown.
+    pub fn open_mod_menu(&mut self, conn: u32, rows: u32, title: Tag) -> Option<i32> {
+        self.open_window(conn, &format!("minecraft:generic_9x{rows}"), title)
+    }
+
+    /// A mod menu's slots, then the guest's inventory and what they carry:
+    /// when it opens and after each click, which puts back the client's own
+    /// guess at what the click moved.
+    pub fn mod_menu_content(&mut self, conn: u32, window: i32, items: &[Option<ItemStack>]) {
+        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        let mut all = items.to_vec();
+        for j in 0..36 {
+            all.push(self.guests[i].inventory[player_slot(j)].clone());
+        }
+        let net: Vec<_> = all.iter().map(|s| self.stack(s)).collect();
+        let carried = self.guests[i].carried.clone();
+        let carried = self.stack(&carried);
+        self.guests[i].send(&C::ContainerSetContent(play::ContainerSetContent {
+            container: window,
+            state: 0,
+            items: net,
+            carried,
+        }));
+    }
+
+    /// Closes window `window` for the guest (a mod's menu).
+    pub fn close_window(&mut self, conn: u32, window: i32) {
+        self.send_to(
+            conn,
+            &C::ContainerClose(play::ContainerClose { container: window }),
+        );
+    }
+
     fn send_menu_content(&mut self, i: usize, mut items: Vec<Option<ItemStack>>) {
         for j in 0..36 {
             items.push(self.guests[i].inventory[player_slot(j)].clone());

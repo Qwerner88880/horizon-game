@@ -80,6 +80,22 @@ use block_bindings::{
     BlockEntityHost,
     horizon::mods::{block_entities, energy},
 };
+/// Capability `menus`' world: its own, so server mods built before it (no
+/// `menu-events` export) still load. `players` is the server world's.
+mod menu_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "menu-host",
+        additional_derives: [PartialEq],
+        with: {
+            "horizon:mods/players": super::server_bindings::horizon::mods::players,
+        },
+    });
+}
+pub use menu_bindings::horizon::mods::menus::MenuItem;
+use menu_bindings::{MenuHost, horizon::mods::menus};
+/// Rows a menu may have, and so its slots.
+const MENU_ROWS: u32 = 6;
 /// Claimed blocks a mod may list (`block-entity-events.blocks`).
 const CLAIMED_BLOCKS: usize = 256;
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
@@ -257,6 +273,25 @@ pub enum Output {
     /// `recipes.place`: the recipe book's click on this display id, all of
     /// it when `all`.
     PlaceRecipe { book_id: i32, all: bool },
+    /// `menus.open`: a chest menu of mod `mod_id` for the player with this
+    /// id, its slots checked against its rows.
+    OpenMenu {
+        mod_id: String,
+        player: String,
+        menu: String,
+        title: String,
+        rows: u32,
+        items: Vec<MenuItem>,
+    },
+    /// `menus.set-items`: the slots of that player's open menu `menu`.
+    SetMenuItems {
+        mod_id: String,
+        player: String,
+        menu: String,
+        items: Vec<MenuItem>,
+    },
+    /// `menus.close`: that player's menu of mod `mod_id`, if open.
+    CloseMenu { mod_id: String, player: String },
     /// `recipes.give`: a stack for a creative player.
     Give {
         item: String,
@@ -338,6 +373,8 @@ struct Running {
     reads_recipes: bool,
     /// Capability `block-entities`: the export and the blocks it claims.
     blocks: Option<(BlockEntityHost, Vec<String>)>,
+    /// Capability `menus`: the `menu-events` export.
+    menus: Option<MenuHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -566,6 +603,49 @@ impl Mods {
             }
         }
     }
+    /// `player` clicked slot `slot` of mod `mod_id`'s menu `menu`.
+    pub fn menu_clicked(
+        &mut self,
+        mod_id: &str,
+        player: &ServerPlayer,
+        menu: &str,
+        slot: u32,
+        button: u8,
+        shift: bool,
+    ) {
+        let Some(i) = self.running_index(mod_id) else {
+            return;
+        };
+        self.call(i, FUEL_EVENT, |run| match &run.menus {
+            Some(h) => h.horizon_mods_menu_events().call_clicked(
+                &mut run.store,
+                player,
+                menu,
+                slot,
+                button,
+                shift,
+            ),
+            None => Ok(()),
+        });
+    }
+    /// `player` closed mod `mod_id`'s menu `menu`.
+    pub fn menu_closed(&mut self, mod_id: &str, player: &ServerPlayer, menu: &str) {
+        let Some(i) = self.running_index(mod_id) else {
+            return;
+        };
+        self.call(i, FUEL_EVENT, |run| match &run.menus {
+            Some(h) => h
+                .horizon_mods_menu_events()
+                .call_closed(&mut run.store, player, menu),
+            None => Ok(()),
+        });
+    }
+    /// The entry of running mod `mod_id`.
+    fn running_index(&self, mod_id: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.run.as_ref().is_some_and(|r| r.store.data().id == mod_id))
+    }
     /// Mod `id`'s block entities in loaded chunks: those whose block is still
     /// one it claims, and those whose block is gone (removed from the store
     /// here). `None` when the world or the store isn't lent.
@@ -683,6 +763,8 @@ impl Mods {
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             BlockEntityHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            menus::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
@@ -832,6 +914,10 @@ impl Mods {
                 blocks = Some((host, claimed));
             }
         }
+        let menus = match server && m.capabilities.contains(&crate::Capability::Menus) {
+            true => MenuHost::new(&mut store, &instance).ok(),
+            false => None,
+        };
         self.generation += 1;
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
@@ -841,6 +927,7 @@ impl Mods {
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
             blocks,
+            menus,
         }))
     }
 
@@ -1772,6 +1859,68 @@ impl block_entities::Host for State {
             .as_mut()
             .ok_or("block entities are kept only during server hooks")?;
         store.set(&self.id, &(dimension, [x, y, z]), data)
+    }
+}
+/// A menu's slots, checked against its rows.
+fn check_menu_items(rows: u32, items: &[MenuItem]) -> Result<(), String> {
+    if let Some(i) = items.iter().find(|i| i.slot >= rows * 9) {
+        return Err(format!(
+            "slot {} past the menu's {} slots",
+            i.slot,
+            rows * 9
+        ));
+    }
+    if let Some(i) = items.iter().find(|i| i.count == 0 || i.count > 99) {
+        return Err(format!("count {} in slot {}: 1 to 99", i.count, i.slot));
+    }
+    Ok(())
+}
+impl menus::Host for State {
+    fn open(
+        &mut self,
+        player: String,
+        menu: String,
+        title: String,
+        rows: u32,
+        items: Vec<MenuItem>,
+    ) -> Result<(), String> {
+        if !(1..=MENU_ROWS).contains(&rows) {
+            return Err(format!("{rows} rows: 1 to {MENU_ROWS}"));
+        }
+        check_menu_items(rows, &items)?;
+        if !self.snapshot.players.iter().any(|p| p.id == player) {
+            return Err(format!("no player {player} on the server"));
+        }
+        self.out.push(Output::OpenMenu {
+            mod_id: self.id.clone(),
+            player,
+            menu,
+            title,
+            rows,
+            items,
+        });
+        Ok(())
+    }
+    fn set_items(
+        &mut self,
+        player: String,
+        menu: String,
+        items: Vec<MenuItem>,
+    ) -> Result<(), String> {
+        check_menu_items(MENU_ROWS, &items)?;
+        self.out.push(Output::SetMenuItems {
+            mod_id: self.id.clone(),
+            player,
+            menu,
+            items,
+        });
+        Ok(())
+    }
+    fn close(&mut self, player: String) {
+        self.out.push(Output::CloseMenu {
+            mod_id: self.id.clone(),
+            player,
+        });
     }
 }
 impl State {

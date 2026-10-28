@@ -19,10 +19,27 @@ pub(super) enum Who {
     Uuid(u128),
 }
 
+/// A server mod's menu open for a connection (capability `menus`).
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+pub(super) struct ModMenu {
+    pub(super) conn: u32,
+    /// The player's id, for `closed` once they have left.
+    pub(super) player: String,
+    pub(super) window: i32,
+    pub(super) mod_id: String,
+    pub(super) menu: String,
+    pub(super) items: Vec<Option<horizon_client::items::ItemStack>>,
+}
+
 /// What players did during a tick, for the server mods at its end.
 #[cfg_attr(not(feature = "mods"), allow(dead_code))]
 pub(super) enum ModEvent {
     Chat(Who, String),
+    /// A click in a mod's menu slot: the mod, its menu, the slot, the
+    /// button and shift.
+    MenuClick(Who, String, String, u32, u8, bool),
+    /// A mod's menu closed by its player.
+    MenuClosed(Who, String, String),
     Block {
         who: Who,
         pos: [i32; 3],
@@ -49,19 +66,31 @@ impl Game<'_> {
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
     pub(super) fn save_mod_block_entities(&mut self) {}
+    pub(super) fn lan_mod_menu_click(
+        &mut self,
+        _host: &mut LanHost,
+        _conn: u32,
+        _p: &horizon_protocol::packets::play::ContainerClick,
+    ) -> bool {
+        false
+    }
+    pub(super) fn lan_mod_menu_closed(&mut self, _conn: u32, _window: i32) -> bool {
+        false
+    }
 }
 
 #[cfg(feature = "mods")]
 mod run {
-    use super::{Game, LanHost, ModEvent, Who};
+    use super::{Game, LanHost, ModEvent, ModMenu, Who};
     use horizon_client::chunk_map::ChunkMap;
+    use horizon_client::items::ItemStack;
     use horizon_client::{
         command::args::GameMode as Mode,
         lan::data::component_nbt,
         text::{self, Text},
     };
     use horizon_mods::{
-        ArgumentKind, BlockPos, GameMode, Output, ServerCommand, ServerPlayer, WorldView,
+        ArgumentKind, BlockPos, GameMode, MenuItem, Output, ServerCommand, ServerPlayer, WorldView,
     };
     use horizon_protocol::packets::play::{self, Clientbound as C};
     use horizon_world::registry::{BlockRegistry, BlockStateId};
@@ -289,6 +318,18 @@ mod run {
                             self.mods.mods.player_chat(&p, &text);
                         }
                     }
+                    ModEvent::MenuClick(w, mod_id, menu, slot, button, shift) => {
+                        if let Some(p) = who(&w) {
+                            self.mods
+                                .mods
+                                .menu_clicked(&mod_id, &p, &menu, slot, button, shift);
+                        }
+                    }
+                    ModEvent::MenuClosed(w, mod_id, menu) => {
+                        if let Some(p) = who(&w) {
+                            self.mods.mods.menu_closed(&mod_id, &p, &menu);
+                        }
+                    }
                     ModEvent::Block {
                         who: w,
                         pos,
@@ -309,6 +350,16 @@ mod run {
                             self.mods.mods.block_broken(&p, pos, &state);
                         }
                     }
+                }
+            }
+            // Menus of players who left close with them.
+            let (gone, open): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.menus)
+                .into_iter()
+                .partition(|m| !players.iter().any(|p| p.id == m.player));
+            self.mods.menus = open;
+            for m in gone {
+                if let Some(p) = before.iter().find(|p| p.id == m.player) {
+                    self.mods.mods.menu_closed(&m.mod_id, p, &m.menu);
                 }
             }
             self.mods.mods.server_tick(self.ticks);
@@ -463,6 +514,92 @@ mod run {
             });
         }
 
+        /// A mod menu's items as the game's stacks, slot by slot.
+        fn mod_menu_stacks(&self, rows: u32, items: &[MenuItem]) -> Vec<Option<ItemStack>> {
+            let mut out = vec![None; rows as usize * 9];
+            for i in items {
+                let Some(slot) = out.get_mut(i.slot as usize) else {
+                    continue;
+                };
+                if self.res.items().get(&i.item).is_none() {
+                    log::debug!("Horizon: a mod menu shows unknown item {}", i.item);
+                    continue;
+                }
+                let (damage, extra) = horizon_client::item_data::command_components(&i.components)
+                    .map_or((0, None), |tag| {
+                        horizon_client::item_data::decode_components(Some(&tag))
+                    });
+                *slot = Some(ItemStack {
+                    item: i.item.as_str().into(),
+                    count: i.count,
+                    damage,
+                    extra,
+                });
+            }
+            out
+        }
+
+        /// The connection of the player with this id, on `host`.
+        fn conn_of(host: &LanHost, id: &str) -> Option<u32> {
+            host.hub
+                .guests
+                .iter()
+                .find(|g| g.placed && uuid_string(g.uuid) == id)
+                .map(|g| g.conn)
+        }
+
+        /// A click in a window: a mod's menu takes it (and shows its items
+        /// again), others go on to the game's menus.
+        pub(in crate::game) fn lan_mod_menu_click(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            p: &play::ContainerClick,
+        ) -> bool {
+            let Some(m) = self
+                .mods
+                .menus
+                .iter()
+                .find(|m| m.conn == conn && m.window == p.container)
+            else {
+                return false;
+            };
+            let (window, items) = (m.window, m.items.clone());
+            let (mod_id, menu) = (m.mod_id.clone(), m.menu.clone());
+            // Pickup (0) and quick move (1) on the menu's own slots reach the
+            // mod; drags, swaps and the inventory below don't.
+            if let Ok(slot) = u32::try_from(p.slot)
+                && (slot as usize) < items.len()
+                && matches!(p.input, 0 | 1)
+                && self.hears_players()
+            {
+                let button = u8::try_from(p.button).unwrap_or(0);
+                let event =
+                    ModEvent::MenuClick(Who::Conn(conn), mod_id, menu, slot, button, p.input == 1);
+                self.mods.events.push(event);
+            }
+            host.hub.mod_menu_content(conn, window, &items);
+            true
+        }
+
+        /// The client closed window `window`: true when it was a mod's menu.
+        pub(in crate::game) fn lan_mod_menu_closed(&mut self, conn: u32, window: i32) -> bool {
+            let Some(i) = self
+                .mods
+                .menus
+                .iter()
+                .position(|m| m.conn == conn && m.window == window)
+            else {
+                return false;
+            };
+            let m = self.mods.menus.remove(i);
+            if self.hears_players() {
+                let event = ModEvent::MenuClosed(Who::Conn(conn), m.mod_id, m.menu);
+                self.mods.events.push(event);
+            }
+            true
+        }
+
         /// A chat message a player sent.
         pub(in crate::game) fn mod_player_chat(&mut self, who: Who, text: &str) {
             if self.hears_players() {
@@ -596,6 +733,75 @@ mod run {
                     for p in self.server_players(host.as_deref()) {
                         let line = named(&name, text.clone());
                         self.tell_server_player(host.as_deref_mut(), &p.id, line);
+                    }
+                }
+                Output::OpenMenu {
+                    mod_id,
+                    player,
+                    menu,
+                    title,
+                    rows,
+                    items,
+                } => {
+                    let items = self.mod_menu_stacks(rows, &items);
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        log::warn!(
+                            "Horizon: mod {mod_id}'s menus need the server thread (not in-frame yet)"
+                        );
+                        return;
+                    };
+                    let Some(conn) = Self::conn_of(host, &player) else {
+                        return;
+                    };
+                    self.mods.menus.retain(|m| m.conn != conn);
+                    let title = component_nbt(&Text::literal(title).component());
+                    let Some(window) = host.hub.open_mod_menu(conn, rows, title) else {
+                        return;
+                    };
+                    host.hub.mod_menu_content(conn, window, &items);
+                    self.mods.menus.push(ModMenu {
+                        conn,
+                        player,
+                        window,
+                        mod_id,
+                        menu,
+                        items,
+                    });
+                }
+                Output::SetMenuItems {
+                    mod_id,
+                    player,
+                    menu,
+                    items,
+                } => {
+                    let Some(i) =
+                        self.mods.menus.iter().position(|m| {
+                            m.player == player && m.mod_id == mod_id && m.menu == menu
+                        })
+                    else {
+                        return;
+                    };
+                    let rows = (self.mods.menus[i].items.len() / 9) as u32;
+                    let items = self.mod_menu_stacks(rows, &items);
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    let m = &mut self.mods.menus[i];
+                    m.items = items;
+                    host.hub.mod_menu_content(m.conn, m.window, &m.items);
+                }
+                Output::CloseMenu { mod_id, player } => {
+                    let Some(i) = self
+                        .mods
+                        .menus
+                        .iter()
+                        .position(|m| m.player == player && m.mod_id == mod_id)
+                    else {
+                        return;
+                    };
+                    let m = self.mods.menus.remove(i);
+                    if let Some(host) = host.or(self.lan.as_mut()) {
+                        host.hub.close_window(m.conn, m.window);
                     }
                 }
                 Output::SetBlocks {

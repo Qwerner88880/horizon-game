@@ -616,6 +616,28 @@ feeds another's machine. The `cells` example keeps its charge this way.
 **Not yet.** Item energy (batteries in inventories), and item and fluid
 buffers on blocks.
 
+#### Menus (capability `menus`, experimental)
+
+Chest menus a server mod opens for a player: its own items in the slots,
+named and described as it likes, a click on each reaching the mod. Every
+client shows them, vanilla's too: they are vanilla's chest menus
+(`minecraft:generic_9x1` to `9x6`). The `cells` example's `/cellgui` shows a
+cell's charge, refreshed twice a second, with buttons to drain and fill it.
+
+- **Open.** `menus::open(player, menu, title, rows, items)`; `menu` is the
+  mod's own name for it. `MenuItem::new(slot, item, count).named(name,
+  lore)` builds a slot. Opening closes the menu the player had open.
+- **Clicks.** `menu_clicked(player, menu, slot, button, shift)` for a left or
+  right click (shift-click included) on the menu's own slots. The player
+  can't take or drop the items: the menu shows the mod's items again after
+  every click.
+- **Change and close.** `set_items` replaces the slots of the open menu;
+  `close` closes it. `menu_closed` follows the player closing it or leaving.
+
+**Not yet.** Slots players put their own items in; menus for the window's
+own player in in-frame single player (the default single player, on the
+server thread, has them).
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is
