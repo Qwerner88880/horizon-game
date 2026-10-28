@@ -318,6 +318,11 @@ impl Hub {
         }));
     }
 
+    /// An entity type's network id (a mod's display entity).
+    pub fn entity_type_id(&self, kind: &str) -> Option<i32> {
+        self.sync.builtin.get("minecraft:entity_type")?.id(kind)
+    }
+
     /// Closes window `window` for the guest (a mod's menu).
     pub fn close_window(&mut self, conn: u32, window: i32) {
         self.send_to(

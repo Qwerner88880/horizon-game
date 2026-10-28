@@ -772,6 +772,36 @@ interface menus {
     close: func(player: string);
 }
 
+/// Capability `displays`, server mods only (manifest `api = "0.3"`,
+/// experimental): things a mod shows in the world that are not blocks: a
+/// block's model or floating text, moved, scaled and turned freely, the
+/// client animating each change. Each is a vanilla display entity
+/// (`block_display`, `text_display`) the server sends the players in its
+/// dimension; it lasts while the mod runs and is never saved.
+interface displays {
+    record transform {
+        /// Moved by, in blocks.
+        translation: tuple<f32, f32, f32>,
+        scale: tuple<f32, f32, f32>,
+        /// Turned by, as a quaternion (x, y, z, w): (0, 0, 0, 1) not at all.
+        rotation: tuple<f32, f32, f32, f32>,
+    }
+    variant shape {
+        /// A block's model (`minecraft:redstone_block`), from the display's
+        /// position as its corner.
+        block(string),
+        /// Floating text, turned toward whoever looks at it.
+        text(string),
+    }
+    /// Shows the mod's display `name`, or changes it: its shape, position
+    /// and transform, which the client moves to over `interpolation` ticks
+    /// (0: at once). An error for an unknown dimension or block, or past
+    /// 1024 displays.
+    show: func(name: string, dimension: string, x: f64, y: f64, z: f64, shape: shape, transform: transform, interpolation: u32) -> result<_, string>;
+    /// Removes the mod's display `name`, if it has one.
+    hide: func(name: string);
+}
+
 /// What the server calls in a server mod with capability `menus`.
 interface menu-events {
     use players.{player};
@@ -957,6 +987,7 @@ world horizon-block-mod {
     import block-entities;
     import energy;
     import menus;
+    import displays;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -974,6 +1005,11 @@ world block-entity-host {
 world use-host {
     import players;
     export block-use-events;
+}
+
+/// The game's side of capability `displays` (imports only).
+world display-host {
+    import displays;
 }
 
 /// The game's side of capability `menus`: a world of its own, so server

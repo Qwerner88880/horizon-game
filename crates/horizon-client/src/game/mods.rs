@@ -76,6 +76,12 @@ pub(super) struct ModsState {
     /// Capability `menus`: the server mods' menus open for connections.
     #[cfg(feature = "mods")]
     pub(super) menus: Vec<super::server_mods::ModMenu>,
+    /// Capability `displays`: the server mods' display entities, and the
+    /// next entity id one takes.
+    #[cfg(feature = "mods")]
+    pub(super) displays: Vec<super::server_mods::ModDisplay>,
+    #[cfg(feature = "mods")]
+    pub(super) next_display: i32,
     /// Blocks server mods set, by dimension, made before that level's next
     /// tick.
     #[cfg(feature = "mods")]
@@ -716,7 +722,9 @@ impl Game<'_> {
                 | Output::SetBlocks { .. }
                 | Output::OpenMenu { .. }
                 | Output::SetMenuItems { .. }
-                | Output::CloseMenu { .. }) => {
+                | Output::CloseMenu { .. }
+                | Output::ShowDisplay { .. }
+                | Output::HideDisplay { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
                     continue;
                 }

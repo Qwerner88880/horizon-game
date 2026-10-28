@@ -647,6 +647,23 @@ does nothing else with such a click: no vanilla use, no block placed against
 it; a sneaking player with an item in hand still places or uses it as
 vanilla does. A right click on a `cells` lodestone opens its menu.
 
+#### Displays (capability `displays`, experimental)
+
+Block models and text a server mod shows in the world, not as blocks:
+`displays::show(name, dimension, x, y, z, shape, transform, interpolation)`
+shows the mod's display `name` or changes it, `hide(name)` removes it.
+`Shape::Block("minecraft:redstone_block")` draws a block's model from the
+position as its corner; `Shape::Text(text)` floats text that faces whoever
+looks at it. `Transform::identity().scaled(..).turned_y(..).translated(..)`
+moves, scales and turns it; the client blends to a new transform over
+`interpolation` ticks, so a display updated every few ticks moves smoothly.
+Each is a vanilla display entity sent to the players in its dimension
+(clients joining later get it too); it lasts while the mod runs and is never
+saved. Up to 1024 per mod. Above each `cells` lodestone float its charge
+and a spinning redstone core.
+
+**Not yet.** Item displays; Horizon's client draws block and text displays.
+
 New blocks come from a content mod (API 0.2, capability `registries`) that
 a server mod claims: `horizon-forge convert` carries a Java mod's blocks,
 models and textures over as one.

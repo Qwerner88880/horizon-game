@@ -1,4 +1,5 @@
-//! Server text displays: metadata, interpolation, billboard transforms and world text.
+//! Server text and block displays: metadata, interpolation, billboard
+//! transforms, world text and block models.
 use super::Game;
 use horizon_client::{
     hud::{HudBatch, rgba},
@@ -7,6 +8,7 @@ use horizon_client::{
     text_display::{Align, TextDisplayData},
 };
 use horizon_protocol::entity_data::Value;
+use horizon_world::registry::BlockStateId;
 
 pub(super) struct RemoteTextDisplay {
     pub data: TextDisplayData,
@@ -32,6 +34,9 @@ pub(super) struct RemoteTextDisplay {
     /// `TextDisplay.clientDisplayCache`: the split lines, until the render
     /// state changes.
     lines: Option<Lines>,
+    /// A block display's block (`BlockDisplay.DATA_BLOCK_STATE_ID`); None
+    /// for a text display.
+    pub block: Option<BlockStateId>,
 }
 
 /// `TextDisplay.CachedInfo`: each line and its width, and the widest.
@@ -68,6 +73,14 @@ impl RemoteTextDisplay {
             initialized: false,
             last_progress: 0.0,
             lines: None,
+            block: None,
+        }
+    }
+    /// A block display, showing air until its data says otherwise.
+    pub fn new_block(position: [f64; 3], yaw: f32) -> Self {
+        Self {
+            block: Some(BlockStateId(0)),
+            ..Self::new(position, yaw)
         }
     }
     fn progress(&self, partial: f32) -> f32 {
@@ -81,6 +94,11 @@ impl RemoteTextDisplay {
         self.start_dirty |= values.iter().any(|v| v.0 == 8);
         self.duration_dirty |= values.iter().any(|v| v.0 == 9);
         self.dirty |= values.iter().any(|v| renders(v.0));
+        if self.block.is_some()
+            && let Some((_, _, Value::Id(state))) = values.iter().find(|v| v.0 == 23)
+        {
+            self.block = Some(BlockStateId(*state as u32));
+        }
         self.data.apply(values);
     }
     fn tick(&mut self) {
@@ -165,18 +183,31 @@ impl Game<'_> {
             [self.yaw, self.pitch]
         };
         let scale = self.view_scale();
+        // Block displays' models, drawn after the loop (it borrows the displays).
+        let mut blocks = Vec::new();
         for display in self.text_displays.values_mut() {
             display.last_progress = display.progress(partial as f32);
             let d = display.shown.blend(&display.from, display.last_progress);
             let position = display.previous.lerp(display.position, partial);
             let range = f64::from(d.view_range) * 64.0 * scale;
-            if position.distance_squared(camera) >= range * range || d.text.is_empty() {
+            let empty = display.block.is_none() && d.text.is_empty();
+            if position.distance_squared(camera) >= range * range || empty {
                 continue;
             }
             let rotation = std::array::from_fn(|i| {
                 display.old_rotation[i]
                     + angle(display.rotation[i] - display.old_rotation[i]) * partial as f32
             });
+            // BlockDisplayRenderer: the block's model, from the display's
+            // position as its corner, through the display's transform.
+            if let Some(state) = display.block {
+                let matrix = glam::Mat4::from_translation((position - camera).as_vec3())
+                    * d.matrix(rotation, angles);
+                if matrix.is_finite() && state.0 != 0 {
+                    blocks.push((state, matrix, position, d.brightness));
+                }
+                continue;
+            }
             let mut matrix = glam::Mat4::from_translation((position - camera).as_vec3())
                 * d.matrix(rotation, angles)
                 * glam::Mat4::from_rotation_y(std::f32::consts::PI)
@@ -276,6 +307,21 @@ impl Game<'_> {
             }
             self.text_display_vertices += batch.vertices.len() / 6 * 4;
             self.map_patches.extend(batch.patches);
+        }
+        for (state, matrix, position, brightness) in blocks {
+            let light = if brightness == -1 {
+                let world = self.world.light(
+                    position.x.floor() as i32,
+                    position.y.floor() as i32,
+                    position.z.floor() as i32,
+                );
+                (u32::from(world >> 4) * 16) | ((u32::from(world & 15) * 16) << 8)
+            } else {
+                ((brightness as u32 >> 20 & 15) * 16) | (((brightness as u32 >> 4 & 15) * 16) << 8)
+            };
+            let start = normal.len();
+            self.block_model_vertices(state, 0, matrix, light, true, normal);
+            self.text_display_vertices += normal.len() - start;
         }
     }
 }

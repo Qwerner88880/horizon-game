@@ -106,6 +106,18 @@ mod use_bindings {
 }
 use menu_bindings::{MenuHost, horizon::mods::menus};
 use use_bindings::{UseHost, exports::horizon::mods::block_use_events::UsedBlock};
+/// Capability `displays`' imports.
+mod display_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "display-host",
+        additional_derives: [PartialEq],
+    });
+}
+use display_bindings::horizon::mods::displays;
+pub use display_bindings::horizon::mods::displays::{Shape as DisplayShape, Transform};
+/// Displays one mod may show.
+pub const MAX_DISPLAYS: usize = 1024;
 /// Rows a menu may have, and so its slots.
 const MENU_ROWS: u32 = 6;
 /// Claimed blocks a mod may list (`block-entity-events.blocks`).
@@ -304,6 +316,18 @@ pub enum Output {
     },
     /// `menus.close`: that player's menu of mod `mod_id`, if open.
     CloseMenu { mod_id: String, player: String },
+    /// `displays.show`: mod `mod_id`'s display `name`, shown or changed.
+    ShowDisplay {
+        mod_id: String,
+        name: String,
+        dimension: String,
+        pos: [f64; 3],
+        shape: DisplayShape,
+        transform: Transform,
+        interpolation: u32,
+    },
+    /// `displays.hide`.
+    HideDisplay { mod_id: String, name: String },
     /// `recipes.give`: a stack for a creative player.
     Give {
         item: String,
@@ -711,6 +735,10 @@ impl Mods {
             None => Ok(()),
         });
     }
+    /// Whether mod `mod_id` runs here.
+    pub fn runs(&self, mod_id: &str) -> bool {
+        self.running_index(mod_id).is_some()
+    }
     /// The entry of running mod `mod_id`.
     fn running_index(&self, mod_id: &str) -> Option<usize> {
         self.entries
@@ -836,6 +864,8 @@ impl Mods {
             BlockEntityHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             menus::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            displays::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
@@ -1962,6 +1992,47 @@ fn check_menu_items(rows: u32, items: &[MenuItem]) -> Result<(), String> {
         return Err(format!("count {} in slot {}: 1 to 99", i.count, i.slot));
     }
     Ok(())
+}
+impl displays::Host for State {
+    fn show(
+        &mut self,
+        name: String,
+        dimension: String,
+        x: f64,
+        y: f64,
+        z: f64,
+        shape: DisplayShape,
+        transform: Transform,
+        interpolation: u32,
+    ) -> Result<(), String> {
+        if let Some(view) = self.world.lock().ok().as_ref().and_then(|v| v.as_ref()) {
+            if !view.has_dimension(&dimension) {
+                return Err(format!("no dimension {dimension}"));
+            }
+            if let DisplayShape::Block(state) = &shape {
+                view.check_state(state)?;
+            }
+        }
+        if ![x, y, z].iter().all(|v| v.is_finite()) {
+            return Err("a position must be finite".into());
+        }
+        self.out.push(Output::ShowDisplay {
+            mod_id: self.id.clone(),
+            name,
+            dimension,
+            pos: [x, y, z],
+            shape,
+            transform,
+            interpolation: interpolation.min(1200),
+        });
+        Ok(())
+    }
+    fn hide(&mut self, name: String) {
+        self.out.push(Output::HideDisplay {
+            mod_id: self.id.clone(),
+            name,
+        });
+    }
 }
 impl menus::Host for State {
     fn open(

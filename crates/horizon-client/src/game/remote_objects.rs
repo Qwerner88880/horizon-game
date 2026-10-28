@@ -40,6 +40,11 @@ impl Game<'_> {
                 id as i32,
                 super::text_displays::RemoteTextDisplay::new(position, yaw),
             );
+        } else if kind == "minecraft:block_display" {
+            self.text_displays.insert(
+                id as i32,
+                super::text_displays::RemoteTextDisplay::new_block(position, yaw),
+            );
         } else if let Some(cart) = super::minecarts::CartKind::from_id(kind) {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
             c.yaw = yaw;

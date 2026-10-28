@@ -22,6 +22,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `block-entities` | [`block-entities`](#block-entities) | keep its own data on the blocks it claims, saved with the world |
 | `energy` | [`energy`](#energy) | store energy in its blocks and move energy between any mod's blocks |
 | `menus` | [`menus`](#menus) | open menus of its own for you, and see what you click in them |
+| `displays` | [`displays`](#displays) | show block models and text of its own in the world |
 
 ## World `horizon-mod`
 
@@ -41,7 +42,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `server-events`
 
 ## World `block-entity-host`
@@ -57,6 +58,13 @@ The game's side of `block-use-events`: a world of its own, so server mods built 
 
 - Imports (what the game offers): `players`
 - Exports (what the mod provides): `block-use-events`
+
+## World `display-host`
+
+The game's side of capability `displays` (imports only).
+
+- Imports (what the game offers): `displays`
+- Exports (what the mod provides): 
 
 ## World `menu-host`
 
@@ -773,6 +781,32 @@ Capability `menus`, server mods only (manifest `api = "0.3"`, experimental): che
 | `open` | `func(player: string, menu: string, title: string, rows: u32, items: list<menu-item>) -> result<_, string>` | Opens a menu of `rows` rows (1 to 6) titled `title` for the player with this id, closing the menu they had open; `menu` is the mod's own name for it, given back with each click. Slots no item names are empty. An error for a player not on the server, rows out of range or a slot past the last, or for the window's own player in in-frame single player (not yet). |
 | `set-items` | `func(player: string, menu: string, items: list<menu-item>) -> result<_, string>` | Replaces every slot of the player's menu `menu` of this mod, while it is open: an error where it isn't. |
 | `close` | `func(player: string)` | Closes the player's menu of this mod, if one is open. |
+
+## `displays`
+
+Access: capability `displays`.
+
+Capability `displays`, server mods only (manifest `api = "0.3"`, experimental): things a mod shows in the world that are not blocks: a block's model or floating text, moved, scaled and turned freely, the client animating each change. Each is a vanilla display entity (`block_display`, `text_display`) the server sends the players in its dimension; it lasts while the mod runs and is never saved.
+
+### record `transform`
+
+| Field | Type | |
+| --- | --- | --- |
+| `translation` | `tuple<f32, f32, f32>` | Moved by, in blocks. |
+| `scale` | `tuple<f32, f32, f32>` |  |
+| `rotation` | `tuple<f32, f32, f32, f32>` | Turned by, as a quaternion (x, y, z, w): (0, 0, 0, 1) not at all. |
+
+### variant `shape`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `block` | `string` | A block's model (`minecraft:redstone_block`), from the display's position as its corner. |
+| `text` | `string` | Floating text, turned toward whoever looks at it. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `show` | `func(name: string, dimension: string, x: f64, y: f64, z: f64, shape: shape, transform: transform, interpolation: u32) -> result<_, string>` | Shows the mod's display `name`, or changes it: its shape, position and transform, which the client moves to over `interpolation` ticks (0: at once). An error for an unknown dimension or block, or past 1024 displays. |
+| `hide` | `func(name: string)` | Removes the mod's display `name`, if it has one. |
 
 ## `menu-events`
 

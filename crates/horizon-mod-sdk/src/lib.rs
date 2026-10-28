@@ -202,6 +202,7 @@ pub mod server {
         ServerCommand,
     };
     pub use horizon::mods::block_entities;
+    pub use horizon::mods::displays::{self, Shape, Transform};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
     pub use horizon::mods::menus::{self, MenuItem};
     pub use horizon::mods::players::{self, GameMode, Player};
@@ -268,6 +269,31 @@ pub mod server {
         /// `player` used (right-clicked) one of the blocks
         /// [`ServerMod::block_uses`] names.
         fn block_used(&mut self, _player: &Player, _block: &UsedBlock) {}
+    }
+
+    impl Transform {
+        /// Not moved, scaled or turned.
+        pub fn identity() -> Self {
+            Self {
+                translation: (0.0, 0.0, 0.0),
+                scale: (1.0, 1.0, 1.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+            }
+        }
+        pub fn translated(mut self, x: f32, y: f32, z: f32) -> Self {
+            self.translation = (x, y, z);
+            self
+        }
+        pub fn scaled(mut self, x: f32, y: f32, z: f32) -> Self {
+            self.scale = (x, y, z);
+            self
+        }
+        /// Turned by `degrees` about the vertical axis.
+        pub fn turned_y(mut self, degrees: f32) -> Self {
+            let half = degrees.to_radians() / 2.0;
+            self.rotation = (0.0, half.sin(), 0.0, half.cos());
+            self
+        }
     }
 
     impl MenuItem {

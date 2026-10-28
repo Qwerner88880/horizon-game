@@ -31,6 +31,22 @@ pub(super) struct ModMenu {
     pub(super) items: Vec<Option<horizon_client::items::ItemStack>>,
 }
 
+/// A server mod's display entity (capability `displays`): sent as packets
+/// to the players in its dimension, never in the world itself.
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+pub(super) struct ModDisplay {
+    pub(super) id: i32,
+    pub(super) mod_id: String,
+    pub(super) name: String,
+    pub(super) dimension: String,
+    pub(super) pos: [f64; 3],
+    /// `minecraft:block_display` or `minecraft:text_display`.
+    pub(super) kind: &'static str,
+    pub(super) meta: Vec<(u8, i32, horizon_protocol::entity_data::Value)>,
+    /// The connections that have it.
+    pub(super) sent: Vec<u32>,
+}
+
 /// What players did during a tick, for the server mods at its end.
 #[cfg_attr(not(feature = "mods"), allow(dead_code))]
 pub(super) enum ModEvent {
@@ -87,9 +103,48 @@ impl Game<'_> {
 
 #[cfg(feature = "mods")]
 mod run {
+    use super::ModDisplay;
     use super::{Game, LanHost, ModEvent, ModMenu, Who};
     use horizon_client::chunk_map::ChunkMap;
     use horizon_client::items::ItemStack;
+    use horizon_mods::{DisplayShape, Transform};
+    use horizon_protocol::entity_data::{Value as Data, serializer};
+
+    /// Mods' display entities take ids from here up, past the world's.
+    const FIRST_DISPLAY_ID: i32 = 0x6000_0000;
+
+    /// A display's data (`Display`'s, then `BlockDisplay`'s or
+    /// `TextDisplay`'s): its transform, over `interpolation` ticks.
+    fn display_meta(
+        block: Option<i32>,
+        text: Option<horizon_world::nbt::Tag>,
+        t: &Transform,
+        interpolation: u32,
+    ) -> Vec<(u8, i32, Data)> {
+        let (tx, ty, tz) = t.translation;
+        let (sx, sy, sz) = t.scale;
+        let (rx, ry, rz, rw) = t.rotation;
+        let mut meta = vec![
+            (8, serializer::INT, Data::Int(0)),
+            (9, serializer::INT, Data::Int(interpolation as i32)),
+            (11, serializer::VECTOR3, Data::Floats(vec![tx, ty, tz])),
+            (12, serializer::VECTOR3, Data::Floats(vec![sx, sy, sz])),
+            (
+                13,
+                serializer::QUATERNION,
+                Data::Floats(vec![rx, ry, rz, rw]),
+            ),
+        ];
+        if let Some(state) = block {
+            meta.push((23, serializer::BLOCK_STATE, Data::Id(state)));
+        }
+        if let Some(text) = text {
+            // Billboard CENTER: the text faces whoever looks at it.
+            meta.push((15, serializer::BYTE, Data::Byte(3)));
+            meta.push((23, serializer::COMPONENT, Data::Text(text)));
+        }
+        meta
+    }
     use horizon_client::{
         command::args::GameMode as Mode,
         lan::data::component_nbt,
@@ -378,6 +433,7 @@ mod run {
             }
             self.mods.mods.server_tick(self.ticks);
             self.mods.mods.block_entity_tick(self.ticks);
+            self.sync_mod_displays(None);
             self.return_world();
             self.mods.players = players;
             self.show_mod_output();
@@ -551,6 +607,84 @@ mod run {
                 });
             }
             out
+        }
+
+        /// Sends the mods' displays to the players in their dimensions that
+        /// don't have them yet, and drops those of mods no longer running.
+        pub(in crate::game) fn sync_mod_displays(&mut self, host: Option<&mut LanHost>) {
+            let Some(host) = host.or(self.lan.as_mut()) else {
+                return;
+            };
+            Self::sync_displays(&mut self.mods.displays, &self.mods.mods, host);
+        }
+
+        fn sync_displays(
+            displays: &mut Vec<ModDisplay>,
+            mods: &horizon_mods::Mods,
+            host: &mut LanHost,
+        ) {
+            if displays.is_empty() {
+                return;
+            }
+            let (keep, gone): (Vec<_>, Vec<_>) = std::mem::take(displays)
+                .into_iter()
+                .partition(|d| mods.runs(&d.mod_id));
+            *displays = keep;
+            for d in gone {
+                Self::remove_display(host, &d);
+            }
+            for d in displays.iter_mut() {
+                // A player who left, or changed dimension, has it no longer.
+                d.sent.retain(|c| {
+                    host.hub
+                        .guests
+                        .iter()
+                        .any(|g| g.conn == *c && g.placed && g.dimension == d.dimension)
+                });
+                let Some(kind) = host.hub.entity_type_id(d.kind) else {
+                    continue;
+                };
+                let new: Vec<u32> = host
+                    .hub
+                    .guests
+                    .iter()
+                    .filter(|g| g.placed && g.dimension == d.dimension && !d.sent.contains(&g.conn))
+                    .map(|g| g.conn)
+                    .collect();
+                for conn in new {
+                    host.hub.send_to(
+                        conn,
+                        &play::Clientbound::AddEntity(play::AddEntity {
+                            id: d.id,
+                            uuid: 0x686d_6f64_0000_0000_0000_0000_0000_0000 | d.id as u128,
+                            kind,
+                            position: d.pos,
+                            velocity: [0.0; 3],
+                            pitch: 0,
+                            yaw: 0,
+                            head_yaw: 0,
+                            data: 0,
+                        }),
+                    );
+                    host.hub.send_to(
+                        conn,
+                        &C::SetEntityData(play::SetEntityData {
+                            id: d.id,
+                            values: d.meta.clone(),
+                        }),
+                    );
+                    d.sent.push(conn);
+                }
+            }
+        }
+
+        fn remove_display(host: &LanHost, d: &ModDisplay) {
+            for conn in &d.sent {
+                host.hub.send_to(
+                    *conn,
+                    &C::RemoveEntities(play::RemoveEntities { ids: vec![d.id] }),
+                );
+            }
         }
 
         /// The connection of the player with this id, on `host`.
@@ -842,6 +976,98 @@ mod run {
                     let m = self.mods.menus.remove(i);
                     if let Some(host) = host.or(self.lan.as_mut()) {
                         host.hub.close_window(m.conn, m.window);
+                    }
+                }
+                Output::ShowDisplay {
+                    mod_id,
+                    name,
+                    dimension,
+                    pos,
+                    shape,
+                    transform,
+                    interpolation,
+                } => {
+                    let registry = self.pack.assets.registry;
+                    let (kind, block, text) = match shape {
+                        DisplayShape::Block(state) => {
+                            match crate::game::render_control::parse_state(registry, &state) {
+                                Ok(id) => ("minecraft:block_display", Some(id.0 as i32), None),
+                                Err(e) => {
+                                    log::debug!("Horizon: mod {mod_id}'s display {state}: {e}");
+                                    return;
+                                }
+                            }
+                        }
+                        DisplayShape::Text(t) => (
+                            "minecraft:text_display",
+                            None,
+                            Some(component_nbt(&Text::literal(t).component())),
+                        ),
+                    };
+                    let meta = display_meta(block, text, &transform, interpolation);
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    let at = self
+                        .mods
+                        .displays
+                        .iter()
+                        .position(|d| d.mod_id == mod_id && d.name == name);
+                    if let Some(i) = at {
+                        let d = &mut self.mods.displays[i];
+                        if d.kind == kind && d.dimension == dimension && d.pos == pos {
+                            // Only the data changes: the client blends to it.
+                            for conn in &d.sent {
+                                host.hub.send_to(
+                                    *conn,
+                                    &C::SetEntityData(play::SetEntityData {
+                                        id: d.id,
+                                        values: meta.clone(),
+                                    }),
+                                );
+                            }
+                            d.meta = meta;
+                            return;
+                        }
+                        let d = self.mods.displays.remove(i);
+                        Self::remove_display(host, &d);
+                    }
+                    let count = self
+                        .mods
+                        .displays
+                        .iter()
+                        .filter(|d| d.mod_id == mod_id)
+                        .count();
+                    if count >= horizon_mods::MAX_DISPLAYS {
+                        log::warn!("Horizon: mod {mod_id} shows {count} displays already");
+                        return;
+                    }
+                    let id = FIRST_DISPLAY_ID + self.mods.next_display;
+                    self.mods.next_display = (self.mods.next_display + 1) % 0x0FFF_FFFF;
+                    self.mods.displays.push(ModDisplay {
+                        id,
+                        mod_id,
+                        name,
+                        dimension,
+                        pos,
+                        kind,
+                        meta,
+                        sent: Vec::new(),
+                    });
+                    Self::sync_displays(&mut self.mods.displays, &self.mods.mods, host);
+                }
+                Output::HideDisplay { mod_id, name } => {
+                    let Some(i) = self
+                        .mods
+                        .displays
+                        .iter()
+                        .position(|d| d.mod_id == mod_id && d.name == name)
+                    else {
+                        return;
+                    };
+                    let d = self.mods.displays.remove(i);
+                    if let Some(host) = host.or(self.lan.as_mut()) {
+                        Self::remove_display(host, &d);
                     }
                 }
                 Output::SetBlocks {

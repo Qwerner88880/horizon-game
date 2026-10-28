@@ -6,10 +6,11 @@
 //! was lost. `/cell [pos]` reads the cell under the player (or at `pos`);
 //! `/cellgui [pos]`, or a right click on the cell, opens its menu
 //! (capability `menus`): its charge, kept up to date, and buttons to drain
-//! or fill it.
+//! or fill it. Above each cell floats its charge, and a small redstone
+//! core spins (capability `displays`).
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, MenuItem, Player, Registration, ServerMod, UsedBlock,
-    block_entities, energy, menus, players,
+    Args, Argument, BlockEntity, MenuItem, Player, Registration, ServerMod, Shape, Transform,
+    UsedBlock, block_entities, displays, energy, menus, players,
 };
 use std::collections::BTreeMap;
 
@@ -34,8 +35,34 @@ const FILL: u32 = 15;
 const CLOSE: u32 = 22;
 /// Energy a button moves.
 const STEP: u64 = 1000;
-/// Ticks between two refreshes of an open menu.
+/// Ticks between two refreshes of an open menu, and of the displays.
 const REFRESH: u64 = 10;
+/// The core's size, and how far it turns each refresh (the client turns it
+/// smoothly in between).
+const CORE: f32 = 0.3;
+const TURN: f32 = 30.0;
+
+/// The core's transform at `degrees`: scaled and turned about its own
+/// centre (a display turns about its corner, so the turn is undone at the
+/// centre by the translation).
+fn core_transform(degrees: f32) -> Transform {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let c = CORE / 2.0;
+    // Where the turn takes the centre (c, c, c), about the vertical axis.
+    let (x, z) = (c * cos + c * sin, -c * sin + c * cos);
+    Transform::identity()
+        .scaled(CORE, CORE, CORE)
+        .turned_y(degrees)
+        .translated(-x, -c, -z)
+}
+
+/// The names of a cell's displays.
+fn display_names(d: &str, x: i32, y: i32, z: i32) -> (String, String) {
+    (
+        format!("text {d} {x} {y} {z}"),
+        format!("core {d} {x} {y} {z}"),
+    )
+}
 
 /// The menu of a cell holding `stored`.
 fn view(stored: u64) -> Vec<MenuItem> {
@@ -160,10 +187,40 @@ impl ServerMod for Cells {
             for (player, (d, x, y, z)) in &self.open {
                 let _ = menus::set_items(player, "cell", &view(stored(d, *x, *y, *z)));
             }
+            let degrees = (tick / REFRESH) as f32 * TURN % 360.0;
+            for e in entities {
+                let (d, x, y, z) = (&e.dimension, e.x, e.y, e.z);
+                let (text, core) = display_names(d, x, y, z);
+                let (cx, cz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
+                let label = format!("{} FE", stored(d, x, y, z));
+                let _ = displays::show(
+                    &text,
+                    d,
+                    cx,
+                    f64::from(y) + 1.6,
+                    cz,
+                    &Shape::Text(label),
+                    Transform::identity(),
+                    0,
+                );
+                let _ = displays::show(
+                    &core,
+                    d,
+                    cx,
+                    f64::from(y) + 1.2,
+                    cz,
+                    &Shape::Block("minecraft:redstone_block".into()),
+                    core_transform(degrees),
+                    REFRESH as u32,
+                );
+            }
         }
     }
 
     fn block_entity_removed(&mut self, entity: &BlockEntity) {
+        let (text, core) = display_names(&entity.dimension, entity.x, entity.y, entity.z);
+        displays::hide(&text);
+        displays::hide(&core);
         let here = (entity.dimension.clone(), entity.x, entity.y, entity.z);
         let watching: Vec<String> = self
             .open
@@ -249,6 +306,22 @@ horizon_mod_sdk::export_server_mod!(Cells);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_core_turns_about_its_centre() {
+        for degrees in [0.0, 30.0, 90.0, 215.0] {
+            let t = core_transform(degrees);
+            let (qx, qy, qz, qw) = t.rotation;
+            assert!((qx * qx + qy * qy + qz * qz + qw * qw - 1.0).abs() < 1e-5);
+            // The centre, scaled then turned, then moved: back at the origin.
+            let c = CORE / 2.0;
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            let turned = (c * cos + c * sin, -c * sin + c * cos);
+            let (tx, ty, tz) = t.translation;
+            assert!((turned.0 + tx).abs() < 1e-5 && (c + ty).abs() < 1e-5);
+            assert!((turned.1 + tz).abs() < 1e-5);
+        }
+    }
 
     #[test]
     fn the_menu_shows_the_charge() {
