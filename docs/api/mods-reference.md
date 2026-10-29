@@ -46,7 +46,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
 - Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `server-events`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -85,10 +85,10 @@ The game's side of capability `machine-recipes` (imports only).
 
 ## World `multiblock-host`
 
-The game's side of capability `multiblocks` (imports only).
+The game's side of capability `multiblocks`: a world of its own, so server mods built before it (no `multiblock-events` export) still load.
 
 - Imports (what the game offers): `multiblocks`
-- Exports (what the mod provides): 
+- Exports (what the mod provides): `multiblock-events`
 
 ## World `horizon-ui-mod`
 
@@ -832,7 +832,7 @@ Capability `machine-recipes`, server mods only (manifest `api = "0.3"`, experime
 
 Access: capability `multiblocks`.
 
-Capability `multiblocks`, server mods only (manifest `api = "0.3"`, experimental): the mod's multiblock structures. Templates come from its `data/<id>/multiblock/` files, loaded once before the mod starts (as `machine-recipes` are); `check` matches a template against the world at a position and a turn. Needs capabilities `block-entities` (the anchor) and `world`.
+Capability `multiblocks`, server mods only (manifest `api = "0.3"`, experimental): the mod's multiblock structures. Templates come from its `data/<id>/multiblock/` files, loaded once before the mod starts (as `machine-recipes` are); `check` matches a template against the world at a position and a turn, and `watch` asks the game to follow a copy around one of the mod's block entities, calling `multiblock-events` when it comes together and when it breaks. Needs capabilities `block-entities` (the anchor) and `world`.
 
 ### record `cell`
 
@@ -869,6 +869,7 @@ Capability `multiblocks`, server mods only (manifest `api = "0.3"`, experimental
 | --- | --- | --- |
 | `all` | `func() -> list<structure>` | The mod's structures, loaded before `init` and never changed while it runs — call once in `init` and keep. At most 64 a mod. |
 | `check` | `func(dimension: string, x: s32, y: s32, z: s32, quarter: u32, id: string) -> result<option<list<mismatch>>, string>` | Matches structure `id` against the world with its anchor's block entity at a position, turned by `quarter` quarter turns clockwise looked at from above (0 to 3; y offsets don't turn). ok(none): the structure is whole; ok(some): the first mismatches, at most 16. Err for no such structure of this mod, a `quarter` past 3, no chunk of the structure loaded, or no world lent (this is a read of the server's world: it answers during the server's hooks). |
+| `watch` | `func(dimension: string, x: s32, y: s32, z: s32, id: string) -> result<option<u32>, string>` | Asks the game to follow the copy of structure `id` whose anchor is the mod's block entity at a position: about once a second the game checks it, calling `multiblock-events.formed` when it has come together and `broken` when it no longer holds. The answer is the quarter it is whole at — as of this call where the world is lent (the hook that calls it, a command), else as of the last check, about a second ago — and none where it isn't whole (or was never checked yet; kept across saves). Err where the mod has no block entity, or it watches over 256. Calling again is fine: it retells the same copy, and brings a check up to date at once where the world is lent. |
 
 ## `menus`
 
@@ -950,6 +951,32 @@ What the server calls in a server mod with capability `menus`.
 | --- | --- | --- |
 | `clicked` | `func(player: player, menu: string, slot: u32, button: u8, shift: bool)` | The player clicked slot `slot` of the mod's open menu `menu` (only the menu's own slots, not their inventory's): `button` 0 left, 1 right; `shift` held. The menu shows the mod's items again after it. |
 | `closed` | `func(player: player, menu: string)` | The player closed the mod's menu `menu` (or left the server). |
+
+## `multiblock-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `multiblocks`. A server mod built before it has no such export and keeps working.
+
+### record `multiblock`
+
+A followed structure around one of the mod's block entities.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` | `minecraft:overworld`, ... |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `state` | `string` | The anchor block, as `minecraft:oak_log[axis=y]`. |
+| `data` | `list<u8>` | The mod's data on it (`block-entities`). |
+| `structure` | `string` | The structure that came together or broke, as `cells:core`. |
+| `quarter` | `u32` | The quarter turn it is whole at. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `formed` | `func(block: multiblock)` | The structure around the watched block entity came together (or was already whole when the mod asked to watch it: the first check after that reports it, within about a second). |
+| `broken` | `func(block: multiblock)` | A structure that was whole no longer holds, or its block entity's block went. `data` is its last data, as `removed` gets. |
 
 ## `block-use-events`
 

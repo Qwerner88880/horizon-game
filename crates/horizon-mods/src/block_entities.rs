@@ -23,6 +23,8 @@ pub struct BlockEntities {
     pub energy: crate::energy::Buffers,
     /// Capability `items`' inventories on them.
     pub items: crate::items::Inventories,
+    /// Capability `multiblocks`' watches on them.
+    pub multiblocks: crate::multiblocks::Watches,
     /// Changed since the last [`BlockEntities::save`].
     dirty: bool,
 }
@@ -55,6 +57,7 @@ impl BlockEntities {
             return Self {
                 energy: crate::energy::Buffers::load(world),
                 items: crate::items::Inventories::load(world),
+                multiblocks: crate::multiblocks::Watches::load(world),
                 ..Self::default()
             };
         };
@@ -67,6 +70,7 @@ impl BlockEntities {
         let mut out = Self {
             energy: crate::energy::Buffers::load(world),
             items: crate::items::Inventories::load(world),
+            multiblocks: crate::multiblocks::Watches::load(world),
             ..Self::default()
         };
         for (id, entities) in saved {
@@ -85,6 +89,7 @@ impl BlockEntities {
     pub fn save(&mut self, world: &Path) -> std::io::Result<()> {
         self.energy.save(world)?;
         self.items.save(world)?;
+        self.multiblocks.save(world)?;
         if !self.dirty {
             return Ok(());
         }

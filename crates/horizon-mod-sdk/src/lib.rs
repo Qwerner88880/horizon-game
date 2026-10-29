@@ -197,6 +197,7 @@ pub mod server {
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
     pub use exports::horizon::mods::menu_events::Guest as __MenuGuest;
+    pub use exports::horizon::mods::multiblock_events::{Guest as __MultiblockGuest, Multiblock};
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
         ServerCommand,
@@ -272,6 +273,15 @@ pub mod server {
         /// `player` used (right-clicked) one of the blocks
         /// [`ServerMod::block_uses`] names.
         fn block_used(&mut self, _player: &Player, _block: &UsedBlock) {}
+        /// Capability `multiblocks`: a followed structure around one of the
+        /// mod's block entities came together (or was already whole when
+        /// the mod asked to watch it: the first check after that reports
+        /// it, within about a second).
+        fn multiblock_formed(&mut self, _block: &Multiblock) {}
+        /// A structure that was whole no longer holds, or its anchor's
+        /// block went: its last data, as [`ServerMod::block_entity_removed`]
+        /// gets.
+        fn multiblock_broken(&mut self, _block: &Multiblock) {}
     }
 
     impl Transform {
@@ -565,6 +575,14 @@ macro_rules! export_server_mod {
                 }
                 fn removed(entity: $crate::server::BlockEntity) {
                     with(|m| m.block_entity_removed(&entity))
+                }
+            }
+            impl $crate::server::__MultiblockGuest for Export {
+                fn formed(block: $crate::server::Multiblock) {
+                    with(|m| m.multiblock_formed(&block))
+                }
+                fn broken(block: $crate::server::Multiblock) {
+                    with(|m| m.multiblock_broken(&block))
                 }
             }
             #[cfg(target_arch = "wasm32")]

@@ -817,8 +817,10 @@ interface machine-recipes {
 /// experimental): the mod's multiblock structures. Templates come from its
 /// `data/<id>/multiblock/` files, loaded once before the mod starts (as
 /// `machine-recipes` are); `check` matches a template against the world at
-/// a position and a turn. Needs capabilities `block-entities` (the anchor)
-/// and `world`.
+/// a position and a turn, and `watch` asks the game to follow a copy around
+/// one of the mod's block entities, calling `multiblock-events` when it
+/// comes together and when it breaks. Needs capabilities `block-entities`
+/// (the anchor) and `world`.
 interface multiblocks {
     record structure {
         /// `<id>:<path>`: the file's place under `data/<id>/multiblock/`.
@@ -866,6 +868,18 @@ interface multiblocks {
     /// of the structure loaded, or no world lent (this is a read of the
     /// server's world: it answers during the server's hooks).
     check: func(dimension: string, x: s32, y: s32, z: s32, quarter: u32, id: string) -> result<option<list<mismatch>>, string>;
+    /// Asks the game to follow the copy of structure `id` whose anchor is
+    /// the mod's block entity at a position: about once a second the game
+    /// checks it, calling `multiblock-events.formed` when it has come
+    /// together and `broken` when it no longer holds. The answer is the
+    /// quarter it is whole at — as of this call where the world is lent
+    /// (the hook that calls it, a command), else as of the last check,
+    /// about a second ago — and none where it isn't whole (or was never
+    /// checked yet; kept across saves). Err where the mod has no block
+    /// entity, or it watches over 256. Calling again is fine: it retells
+    /// the same copy, and brings a check up to date at once where the
+    /// world is lent.
+    watch: func(dimension: string, x: s32, y: s32, z: s32, id: string) -> result<option<u32>, string>;
 }
 
 /// Capability `menus`, server mods only (manifest `api = "0.3"`,
@@ -961,6 +975,34 @@ interface menu-events {
     clicked: func(player: player, menu: string, slot: u32, button: u8, shift: bool);
     /// The player closed the mod's menu `menu` (or left the server).
     closed: func(player: player, menu: string);
+}
+
+/// What the server calls in a server mod with capability `multiblocks`.
+/// A server mod built before it has no such export and keeps working.
+interface multiblock-events {
+    /// A followed structure around one of the mod's block entities.
+    record multiblock {
+        /// `minecraft:overworld`, ...
+        dimension: string,
+        x: s32,
+        y: s32,
+        z: s32,
+        /// The anchor block, as `minecraft:oak_log[axis=y]`.
+        state: string,
+        /// The mod's data on it (`block-entities`).
+        data: list<u8>,
+        /// The structure that came together or broke, as `cells:core`.
+        structure: string,
+        /// The quarter turn it is whole at.
+        quarter: u32,
+    }
+    /// The structure around the watched block entity came together (or was
+    /// already whole when the mod asked to watch it: the first check
+    /// after that reports it, within about a second).
+    formed: func(block: multiblock);
+    /// A structure that was whole no longer holds, or its block entity's
+    /// block went. `data` is its last data, as `removed` gets.
+    broken: func(block: multiblock);
 }
 
 /// What the server calls in a server mod with capability `block-entities`
@@ -1144,6 +1186,7 @@ world horizon-block-mod {
     export block-entity-events;
     export menu-events;
     export block-use-events;
+    export multiblock-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -1179,9 +1222,11 @@ world machine-recipes-host {
     import machine-recipes;
 }
 
-/// The game's side of capability `multiblocks` (imports only).
+/// The game's side of capability `multiblocks`: a world of its own, so
+/// server mods built before it (no `multiblock-events` export) still load.
 world multiblock-host {
     import multiblocks;
+    export multiblock-events;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

@@ -746,7 +746,22 @@ files (and its recipes), under its own id.
 ```
 
 `multiblocks::all()` lists the mod's structures — call it once in `init`
-and keep the answer, not each tick. `multiblocks::check(dimension, x, y,
+and keep the answer, not each tick. `multiblocks::watch(dimension, x, y,
+z, id)` asks the game to follow the copy of structure `id` whose anchor
+is the mod's block entity at a position: about once a second the game
+checks it, calling `multiblock_formed` when it has come together and
+`multiblock_broken` when it no longer holds (or its anchor's block went,
+with the block entity's last data). The answer is the quarter turn it is
+whole at as of the call — the world is lent in the server's hooks, so a
+mod watching in the first `block_entity_tick` of an anchor learns at once
+whether the structure already stands; after a restart of the mod or the
+game it is the answer to trust, the events not repeating — and the
+watch's state is kept across saves. Err where the mod has no block
+entity at the position, no such structure, or it watches over 256. A
+first watch of an anchor in its `block_entity_tick`, and `formed`/
+`broken` broadcast or mark the mod's own state: an energy core, a fusion
+chamber ready. Several structures may share one anchor (a core's tiers):
+watch each id, and `formed` names which came together. `multiblocks::check(dimension, x, y,
 z, quarter, id)` matches structure `id` turned by `quarter` quarter turns
 clockwise looked at from above (y doesn't turn) against the world with
 its anchor at a position: `Ok(None)` — it is whole; `Ok(Some(..))` — the
@@ -765,11 +780,13 @@ block it needs (`data/cells/multiblock/` in the example).
 
 **Not yet.** Block states (properties) are not matched, only block ids,
 and a palette names no tags; turns other than quarter ones, and mirrored
-shapes, are not searched (call `check` once a quarter); structures
-without one of the mod's block entities as their anchor cannot be
-checked where they stand; changed files are read at the next start of the
-mods, as machine recipes are; and a structure's coming together and
-breaking is not told to the mod — it checks when it needs to know.
+shapes, are not searched (`check` answers one quarter a call, and a watch
+tries them in turn itself); a followed structure is checked about once a
+second, not on every neighbour's change — a block placed and taken away
+between two checks is never seen, and no event tells the mod which
+neighbour changed; structures without one of the mod's block entities as
+their anchor cannot be watched; changed files are read at the next start
+of the mods, as machine recipes are.
 
 New blocks come from a content mod (API 0.2, capability `registries`) that
 a server mod claims: `horizon-forge convert` carries a Java mod's blocks,

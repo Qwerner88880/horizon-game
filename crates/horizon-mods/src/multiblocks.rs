@@ -478,6 +478,19 @@ pub struct Watch {
     pub quarter: u32,
     /// Whether it held at the last check.
     pub formed: bool,
+    /// Whether the mod has heard `formed` since it last came together (a
+    /// whole structure watched into place is reported by the next check
+    /// pass, not by the `watch` call that saw it).
+    pub told: bool,
+}
+
+impl Watch {
+    /// Never checked, never told: what a fresh watch starts as.
+    pub const UNTOLD: Watch = Watch {
+        quarter: 0,
+        formed: false,
+        told: false,
+    };
 }
 
 /// Capability `multiblocks`' watches: the copies of its structures the game
@@ -505,6 +518,7 @@ struct Saved {
     structure: String,
     quarter: u32,
     formed: bool,
+    told: bool,
 }
 
 /// A watch's place: the anchor's dimension and position, as
@@ -531,6 +545,7 @@ impl Watches {
                     Watch {
                         quarter: w.quarter.min(3),
                         formed: w.formed,
+                        told: w.told,
                     },
                 );
             }
@@ -559,6 +574,7 @@ impl Watches {
                             structure: structure.clone(),
                             quarter: w.quarter,
                             formed: w.formed,
+                            told: w.told,
                         })
                     })
                     .collect();
@@ -591,13 +607,7 @@ impl Watches {
             .entry(key)
             .or_default();
         if !anchors.contains_key(structure) {
-            anchors.insert(
-                structure.to_owned(),
-                Watch {
-                    quarter: 0,
-                    formed: false,
-                },
-            );
+            anchors.insert(structure.to_owned(), Watch::UNTOLD);
             self.dirty = true;
         }
         Ok(())
@@ -608,24 +618,18 @@ impl Watches {
         self.by_mod.get(mod_id)?.get(key)?.get(structure).copied()
     }
 
-    /// Writes what the last check saw (the pass and `watch`'s answer).
-    pub fn set_state(
-        &mut self,
-        mod_id: &str,
-        key: &Key,
-        structure: &str,
-        formed: bool,
-        quarter: u32,
-    ) {
+    /// Writes what a check saw: the pass's, or `watch`'s where the world
+    /// was lent. A watch that is no longer whole forgets it was told, so
+    /// the next coming together is news again.
+    pub fn set(&mut self, mod_id: &str, key: &Key, structure: &str, watch: Watch) {
         if let Some(w) = self
             .by_mod
             .get_mut(mod_id)
             .and_then(|m| m.get_mut(key))
             .and_then(|a| a.get_mut(structure))
-            && (w.formed, w.quarter) != (formed, quarter)
+            && *w != watch
         {
-            w.formed = formed;
-            w.quarter = quarter;
+            *w = watch;
             self.dirty = true;
         }
     }
@@ -1068,22 +1072,26 @@ mod tests {
         watches.watch("m", key(0), "m:tier2").unwrap();
         watches.watch("m", key(1), "m:core").unwrap();
         assert_eq!(watches.count("m"), 3);
-        assert_eq!(
-            watches.get("m", &key(0), "m:core"),
-            Some(Watch {
-                quarter: 0,
-                formed: false
-            })
-        );
+        assert_eq!(watches.get("m", &key(0), "m:core"), Some(Watch::UNTOLD));
         // Retelling an anchored watch is not a new one; its state stays.
-        watches.set_state("m", &key(0), "m:core", true, 2);
+        watches.set(
+            "m",
+            &key(0),
+            "m:core",
+            Watch {
+                quarter: 2,
+                formed: true,
+                told: false,
+            },
+        );
         watches.watch("m", key(0), "m:core").unwrap();
         assert_eq!(watches.count("m"), 3);
         assert_eq!(
             watches.get("m", &key(0), "m:core"),
             Some(Watch {
                 quarter: 2,
-                formed: true
+                formed: true,
+                told: false,
             })
         );
         let dir = std::env::temp_dir().join(format!("horizon-watches-{}", std::process::id()));
@@ -1094,23 +1102,12 @@ mod tests {
             back.get("m", &key(0), "m:core"),
             Some(Watch {
                 quarter: 2,
-                formed: true
+                formed: true,
+                told: false,
             })
         );
-        assert_eq!(
-            back.get("m", &key(0), "m:tier2"),
-            Some(Watch {
-                quarter: 0,
-                formed: false
-            })
-        );
-        assert_eq!(
-            back.get("m", &key(1), "m:core"),
-            Some(Watch {
-                quarter: 0,
-                formed: false
-            })
-        );
+        assert_eq!(back.get("m", &key(0), "m:tier2"), Some(Watch::UNTOLD));
+        assert_eq!(back.get("m", &key(1), "m:core"), Some(Watch::UNTOLD));
         // An anchor's watches go together, with its block entity.
         let gone = back.remove_anchor("m", &key(0));
         assert_eq!(

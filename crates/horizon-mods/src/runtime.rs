@@ -126,6 +126,11 @@ use display_bindings::horizon::mods::displays;
 pub use display_bindings::horizon::mods::displays::{Shape as DisplayShape, Transform};
 /// Displays one mod may show.
 pub const MAX_DISPLAYS: usize = 1024;
+/// How often a watched structure is checked again (capability
+/// `multiblocks`): every 20 ticks, about a second.
+const CHECK_EVERY: u64 = 20;
+/// Block reads one check pass may spend, across every watch of a mod.
+const CHECK_READS: usize = 8192;
 /// Rows a menu may have, and so its slots.
 const MENU_ROWS: u32 = 6;
 /// Claimed blocks a mod may list (`block-entity-events.blocks`).
@@ -184,8 +189,9 @@ mod multiblock_bindings {
         additional_derives: [PartialEq],
     });
 }
-use multiblock_bindings::horizon::mods::multiblocks;
+pub use multiblock_bindings::exports::horizon::mods::multiblock_events::Multiblock;
 pub use multiblock_bindings::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
+use multiblock_bindings::{MultiblockHost, horizon::mods::multiblocks};
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -464,6 +470,8 @@ struct Running {
     menus: Option<MenuHost>,
     /// `block-use-events` and the claimed blocks whose use the mod takes.
     uses: Option<(UseHost, Vec<String>)>,
+    /// Capability `multiblocks`: the `multiblock-events` export.
+    multiblocks: Option<MultiblockHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -680,11 +688,28 @@ impl Mods {
                     None => Ok(()),
                 });
                 // Its buffer and inventory stay readable in `removed`, then
-                // go: the inventory's items drop where the block was.
+                // go: the inventory's items drop where the block was, and
+                // the watches on it go with it — a structure that was whole
+                // around it is told broken, with its last data.
+                let mut broke = Vec::new();
                 if let Ok(mut slot) = self.entities.lock()
                     && let Some(store) = slot.as_mut()
                 {
-                    let key = (e.dimension, [e.x, e.y, e.z]);
+                    let key = (e.dimension.clone(), [e.x, e.y, e.z]);
+                    for (structure, w) in store.multiblocks.remove_anchor(&id, &key) {
+                        if w.formed {
+                            broke.push(Multiblock {
+                                dimension: e.dimension.clone(),
+                                x: e.x,
+                                y: e.y,
+                                z: e.z,
+                                state: e.state.clone(),
+                                data: e.data.clone(),
+                                structure,
+                                quarter: w.quarter,
+                            });
+                        }
+                    }
                     store.energy.remove(&id, &key);
                     let stacks = store.items.remove(&id, &key);
                     if !stacks.is_empty() {
@@ -695,6 +720,9 @@ impl Mods {
                         });
                     }
                 }
+                for block in broke {
+                    self.multiblock_broken(i, &block);
+                }
             }
             if !live.is_empty() {
                 self.call(i, FUEL_TICK, |run| match &run.blocks {
@@ -704,6 +732,174 @@ impl Mods {
                     }
                     None => Ok(()),
                 });
+            }
+            // Every CHECK_EVERY ticks, the mod's watched structures are
+            // matched against the world again (capability `multiblocks`).
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_some_and(|r| r.multiblocks.is_some())
+                && tick.is_multiple_of(CHECK_EVERY)
+            {
+                self.multiblock_pass(i, &id);
+            }
+        }
+    }
+
+    /// `multiblock-events.broken` in mod `i`.
+    fn multiblock_broken(&mut self, i: usize, block: &Multiblock) {
+        self.call(i, FUEL_EVENT, |run| match &run.multiblocks {
+            Some(h) => h
+                .horizon_mods_multiblock_events()
+                .call_broken(&mut run.store, block),
+            None => Ok(()),
+        });
+    }
+
+    /// One check pass of mod `id`'s watches (capability `multiblocks`):
+    /// each is matched against the world again, from where the last pass
+    /// stopped, within [`CHECK_READS`] block reads — a watch the budget
+    /// doesn't reach waits for the next pass. The world and the store must
+    /// be lent (this runs inside [`Mods::block_entity_tick`]).
+    fn multiblock_pass(&mut self, i: usize, id: &str) {
+        let Some(table) = self.multiblocks.lock().ok().and_then(|s| s.clone()) else {
+            return;
+        };
+        let mut events: Vec<(bool, Multiblock)> = Vec::new();
+        {
+            let Ok(world) = self.world.lock() else {
+                return;
+            };
+            let Some(world) = world.as_ref() else {
+                return;
+            };
+            let Ok(mut slot) = self.entities.lock() else {
+                return;
+            };
+            let Some(store) = slot.as_mut() else {
+                return;
+            };
+            let watched: Vec<(crate::block_entities::Key, String)> = store
+                .multiblocks
+                .of(id)
+                .map(|((d, p), s, _)| ((d.clone(), *p), s.to_owned()))
+                .collect();
+            if watched.is_empty() {
+                return;
+            }
+            let len = watched.len();
+            let mut reads = 0;
+            let mut next = store.multiblocks.cursor % len;
+            for _ in 0..len {
+                let (key, structure_id) = &watched[next];
+                let Some(structure) = table.of_mod(id).iter().find(|s| s.id == *structure_id)
+                else {
+                    // A structure the mod no longer carries: kept, skipped.
+                    next = (next + 1) % len;
+                    continue;
+                };
+                // The budget counts the cells a check reads; a watch past
+                // it waits for the next pass, which starts here.
+                if reads + structure.cells.len() > CHECK_READS {
+                    break;
+                }
+                // The anchor's block entity must be there, and its chunk
+                // loaded, as the anchor's block stands.
+                let Some(data) = store.get(id, key).map(<[u8]>::to_vec) else {
+                    next = (next + 1) % len;
+                    continue;
+                };
+                let Some(state) = world.block(&key.0, key.1[0], key.1[1], key.1[2]) else {
+                    next = (next + 1) % len;
+                    continue;
+                };
+                let watch = store
+                    .multiblocks
+                    .get(id, key, structure_id)
+                    .unwrap_or(crate::multiblocks::Watch::UNTOLD);
+                let check = |quarter: u32| {
+                    crate::multiblocks::check_cells(structure, key.1, quarter, &|bx, by, bz| {
+                        world.block(&key.0, bx, by, bz)
+                    })
+                };
+                // The quarter it last held first, then the others: a core
+                // rebuilt turned is whole where it stands.
+                let mut whole = None;
+                for (i, quarter) in [watch.quarter, 0, 1, 2, 3].into_iter().enumerate() {
+                    if whole.is_some() || (i > 0 && quarter == watch.quarter) {
+                        continue;
+                    }
+                    reads += structure.cells.len();
+                    if matches!(check(quarter), Ok(None)) {
+                        whole = Some(quarter);
+                    }
+                }
+                let of = |quarter: u32| Multiblock {
+                    dimension: key.0.clone(),
+                    x: key.1[0],
+                    y: key.1[1],
+                    z: key.1[2],
+                    state: state.clone(),
+                    data: data.clone(),
+                    structure: structure_id.clone(),
+                    quarter,
+                };
+                let formed = |quarter: u32, told: bool| crate::multiblocks::Watch {
+                    quarter,
+                    formed: true,
+                    told,
+                };
+                match (watch.formed, whole) {
+                    // It came together.
+                    (false, Some(q)) => {
+                        events.push((true, of(q)));
+                        store
+                            .multiblocks
+                            .set(id, key, structure_id, formed(q, true));
+                    }
+                    // It no longer holds.
+                    (true, None) => {
+                        events.push((false, of(watch.quarter)));
+                        store.multiblocks.set(
+                            id,
+                            key,
+                            structure_id,
+                            crate::multiblocks::Watch {
+                                quarter: watch.quarter,
+                                formed: false,
+                                told: false,
+                            },
+                        );
+                    }
+                    // Whole at watch time and not yet told: this pass tells
+                    // it. Rebuilt turned, it only turns.
+                    (true, Some(q)) if !watch.told => {
+                        events.push((true, of(q)));
+                        store
+                            .multiblocks
+                            .set(id, key, structure_id, formed(q, true));
+                    }
+                    (true, Some(q)) => {
+                        store
+                            .multiblocks
+                            .set(id, key, structure_id, formed(q, true));
+                    }
+                    (false, None) => {}
+                }
+                next = (next + 1) % len;
+            }
+            store.multiblocks.cursor = next;
+        }
+        for (formed, block) in events {
+            if formed {
+                self.call(i, FUEL_EVENT, |run| match &run.multiblocks {
+                    Some(h) => h
+                        .horizon_mods_multiblock_events()
+                        .call_formed(&mut run.store, &block),
+                    None => Ok(()),
+                });
+            } else {
+                self.multiblock_broken(i, &block);
             }
         }
     }
@@ -1127,6 +1323,12 @@ impl Mods {
             true => MenuHost::new(&mut store, &instance).ok(),
             false => None,
         };
+        // `multiblock-events`: a server mod built before the capability has
+        // no export and keeps working, watching nothing.
+        let multiblocks = match server && m.capabilities.contains(&crate::Capability::Multiblocks) {
+            true => MultiblockHost::new(&mut store, &instance).ok(),
+            false => None,
+        };
         self.generation += 1;
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
@@ -1139,6 +1341,7 @@ impl Mods {
             blocks,
             menus,
             uses,
+            multiblocks,
         }))
     }
 
@@ -2541,11 +2744,75 @@ impl multiblocks::Host for State {
         })
         .map(|mismatches| mismatches.map(|list| list.into_iter().map(wit_mismatch).collect()))
     }
+    fn watch(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        id: String,
+    ) -> Result<Option<u32>, String> {
+        let key = (dimension, [x, y, z]);
+        let table = self.template_table();
+        let structure = table
+            .as_deref()
+            .and_then(|t| t.of_mod(&self.id).iter().find(|s| s.id == id))
+            .ok_or_else(|| format!("no structure {id} of this mod"))?;
+        self.with_store(|s, mod_id| {
+            if s.get(mod_id, &key).is_none() {
+                return Err(format!(
+                    "no block entity of this mod at {x} {y} {z} in {}",
+                    key.0
+                ));
+            }
+            s.multiblocks.watch(mod_id, key.clone(), &id)
+        })??;
+        // Where the world is lent (the server's hooks), the answer is of
+        // now: checked here, kept in the store, and the next check pass
+        // tells the mod it came together — or that it no longer holds.
+        let Some(whole) = (|| {
+            let world = self.world.lock().ok()?;
+            let view = world.as_ref()?;
+            Some((0..4u32).find(|&quarter| {
+                matches!(
+                    crate::multiblocks::check_cells(structure, key.1, quarter, &|bx, by, bz| view
+                        .block(&key.0, bx, by, bz)),
+                    Ok(None)
+                )
+            }))
+        })() else {
+            // Without the world lent: what the last check pass saw.
+            return Ok(self.last_whole(&key, &id));
+        };
+        let quarter = whole.unwrap_or_else(|| self.last_whole(&key, &id).unwrap_or(0));
+        self.with_store(|s, m| {
+            s.multiblocks.set(
+                m,
+                &key,
+                &id,
+                crate::multiblocks::Watch {
+                    quarter,
+                    formed: whole.is_some(),
+                    told: false,
+                },
+            )
+        })?;
+        Ok(whole)
+    }
 }
 impl State {
     /// The multiblocks table this run loaded, if the game gave it one.
     fn template_table(&self) -> Option<Arc<crate::multiblocks::Templates>> {
         self.multiblocks.lock().ok().and_then(|s| s.clone())
+    }
+    /// What the last check pass saw of a watch: its quarter turn where the
+    /// structure held, none elsewhere (or with no watch at all).
+    fn last_whole(&mut self, key: &crate::block_entities::Key, id: &str) -> Option<u32> {
+        self.with_store(|s, m| s.multiblocks.get(m, key, id))
+            .ok()
+            .flatten()
+            .filter(|w| w.formed)
+            .map(|w| w.quarter)
     }
 }
 
