@@ -126,6 +126,18 @@ mod entity_bindings {
         },
     });
 }
+/// Capability `game-events`' world: its own, so server mods built before it
+/// (no `game-events` export) still load. `players` is the server world's.
+mod game_event_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "game-events-host",
+        with: {
+            "horizon:mods/players": super::server_bindings::horizon::mods::players,
+        },
+    });
+}
+use game_event_bindings::GameEventsHost;
 /// Capability `redstone`'s world: its own, so server mods built before it
 /// (no `redstone-events` export) still load.
 mod redstone_bindings {
@@ -786,6 +798,8 @@ struct Running {
     entities: Option<EntityHost>,
     /// Capability `redstone`: the `redstone-events` export.
     redstone: Option<RedstoneHost>,
+    /// Capability `game-events`: the `game-events` export.
+    game_events: Option<GameEventsHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -1323,6 +1337,80 @@ impl Mods {
                     .call_used(&mut run.store, player, &block)
             }
             None => Ok(()),
+        });
+    }
+    /// Tells every running mod with capability `game-events` of an event.
+    fn game_event(
+        &mut self,
+        call: impl Fn(&GameEventsHost, &mut Store<State>) -> wasmtime::Result<()>,
+    ) {
+        for i in 0..self.entries.len() {
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_none_or(|r| r.game_events.is_none())
+            {
+                continue;
+            }
+            self.call(i, FUEL_EVENT, |run| match &run.game_events {
+                Some(h) => call(h, &mut run.store),
+                None => Ok(()),
+            });
+        }
+    }
+    /// Whether a running mod hears game events.
+    pub fn wants_game_events(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.game_events.is_some()))
+    }
+    /// `player` lost `amount` health, to `health`.
+    pub fn player_hurt(&mut self, player: &ServerPlayer, amount: f32, health: f32) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_player_hurt(s, player, amount, health)
+        });
+    }
+    /// `player` died; `cause` is the death message.
+    pub fn player_died(&mut self, player: &ServerPlayer, cause: &str) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_player_died(s, player, cause)
+        });
+    }
+    /// `player` is alive again.
+    pub fn player_respawned(&mut self, player: &ServerPlayer) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_player_respawned(s, player)
+        });
+    }
+    /// `player` is in dimension `to`, after `from`.
+    pub fn dimension_changed(&mut self, player: &ServerPlayer, from: &str, to: &str) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_dimension_changed(s, player, from, to)
+        });
+    }
+    /// `player`'s game mode changed.
+    pub fn game_mode_changed(&mut self, player: &ServerPlayer, from: GameMode, to: GameMode) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_game_mode_changed(s, player, from, to)
+        });
+    }
+    /// `player` killed mob `id` of `kind`.
+    pub fn mob_killed(&mut self, player: &ServerPlayer, kind: &str, id: u32) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_mob_killed(s, player, kind, id)
+        });
+    }
+    /// The weather turned to `weather` (`clear`, `rain`, `thunder`).
+    pub fn weather_changed(&mut self, weather: &str) {
+        self.game_event(|h, s| {
+            h.horizon_mods_game_events()
+                .call_weather_changed(s, weather)
         });
     }
     /// Whether a running mod has capability `redstone`: only then are the
@@ -2121,6 +2209,13 @@ impl Mods {
             true => EntityHost::new(&mut store, &instance).ok(),
             false => None,
         };
+        // `game-events`: a server mod built before the capability has no
+        // export and keeps working, hearing nothing.
+        let game_events_export =
+            match server && m.capabilities.contains(&crate::Capability::GameEvents) {
+                true => GameEventsHost::new(&mut store, &instance).ok(),
+                false => None,
+            };
         // `redstone-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing of its signals.
         let redstone_export = match server && m.capabilities.contains(&crate::Capability::Redstone)
@@ -2157,6 +2252,7 @@ impl Mods {
             net_client,
             entities: entity_export,
             redstone: redstone_export,
+            game_events: game_events_export,
         }))
     }
 

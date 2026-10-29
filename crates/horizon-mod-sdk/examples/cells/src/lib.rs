@@ -140,6 +140,9 @@ struct Cells {
     /// The cells a signal reaches (capability `redstone`), told by
     /// `redstone_changed`: they don't charge.
     powered: std::collections::BTreeSet<(String, i32, i32, i32)>,
+    /// The mobs each player has felled this session (capability
+    /// `game-events`), by player id.
+    felled: BTreeMap<String, u32>,
 }
 
 /// The machine recipe kind this mod's files carry (`data/cells/recipe/`).
@@ -1206,6 +1209,29 @@ impl ServerMod for Cells {
             "A sentinel fell at {:.0} {:.0} {:.0}",
             entity.x, entity.y, entity.z
         ));
+    }
+
+    fn player_died(&mut self, player: &Player, cause: &str) {
+        // Capability `game-events`.
+        players::broadcast(&if cause.is_empty() {
+            format!("{} died", player.name)
+        } else {
+            format!("{} died: {cause}", player.name)
+        });
+    }
+
+    fn dimension_changed(&mut self, player: &Player, _before: &str, after: &str) {
+        players::tell(&player.id, &format!("Welcome to {after}"));
+    }
+
+    fn mob_killed(&mut self, player: &Player, kind: &str, _id: u32) {
+        let n = self.felled.entry(player.id.clone()).or_default();
+        *n += 1;
+        players::tell(&player.id, &format!("You felled a {kind} ({n} so far)"));
+    }
+
+    fn weather_changed(&mut self, weather: &str) {
+        players::broadcast(&format!("The weather turns to {weather}"));
     }
 
     fn redstone_changed(&mut self, dimension: &str, x: i32, y: i32, z: i32, input: &Sides) {

@@ -1,0 +1,35 @@
+# Capability game-events: the server tells the mod what happens to players
+# and the world. The cells example answers a death, a change of dimension,
+# a mob felled and the weather; a hurt, a respawn and a game mode change
+# are told too and left alone.
+
+[[step]]
+join = "Alex"
+game-events = ["hurt Alex 4 16", "respawned Alex", "mode Alex survival creative"]
+expect.told = []
+expect.broadcast = []
+
+[[step]]
+game-events = ["died Alex Alex fell from a high place"]
+expect.broadcast = ["Alex died: Alex fell from a high place"]
+
+[[step]]
+game-events = ["dimension Alex minecraft:overworld minecraft:the_nether"]
+expect.told = ["Alex: Welcome to minecraft:the_nether"]
+
+# Each kill is counted for the player.
+[[step]]
+game-events = ["killed Alex minecraft:zombie 7", "killed Alex minecraft:creeper 9"]
+expect.told = [
+  "Alex: You felled a minecraft:zombie (1 so far)",
+  "Alex: You felled a minecraft:creeper (2 so far)",
+]
+
+[[step]]
+game-events = ["weather rain", "weather clear"]
+expect.broadcast = ["The weather turns to rain", "The weather turns to clear"]
+
+# A death with no message (the rule hides it).
+[[step]]
+game-events = ["died Alex"]
+expect.broadcast = ["Alex died"]

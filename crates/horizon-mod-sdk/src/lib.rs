@@ -208,6 +208,7 @@ pub mod server {
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
     pub use exports::horizon::mods::entity_events::Guest as __EntityGuest;
+    pub use exports::horizon::mods::game_events::Guest as __GameEventsGuest;
     pub use exports::horizon::mods::item_events::{
         Entity, Guest as __ItemGuest, PlayerStack, UsedBlock as ItemUsedBlock,
     };
@@ -343,6 +344,26 @@ pub mod server {
         /// A player right-clicked a mob that takes the use
         /// ([`SpawnOptions::takes_use`]).
         fn entity_used(&mut self, _player: &Player, _entity: &ModEntity) {}
+        /// A player's health fell by `amount` points, to `health` (capability
+        /// `game-events`): any damage, whatever its source. Not told for the
+        /// damage that killed them (`player_died` follows).
+        fn player_damaged(&mut self, _player: &Player, _amount: f32, _health: f32) {}
+        /// A player died (capability `game-events`); `cause` is the death
+        /// message, empty when the `showDeathMessages` rule hides it.
+        fn player_died(&mut self, _player: &Player, _cause: &str) {}
+        /// A dead player is alive again (capability `game-events`).
+        fn player_respawned(&mut self, _player: &Player) {}
+        /// A player is in another dimension than the last tick (capability
+        /// `game-events`).
+        fn dimension_changed(&mut self, _player: &Player, _before: &str, _after: &str) {}
+        /// A player's game mode changed (capability `game-events`).
+        fn game_mode_changed(&mut self, _player: &Player, _before: GameMode, _after: GameMode) {}
+        /// A player's melee blow killed a mob of `kind` with entity id `id`
+        /// (capability `game-events`).
+        fn mob_killed(&mut self, _player: &Player, _kind: &str, _id: u32) {}
+        /// The weather turned: `clear`, `rain` or `thunder` (capability
+        /// `game-events`).
+        fn weather_changed(&mut self, _weather: &str) {}
         /// What one of the mod's block entities reads from its faces changed,
         /// was read for the first time, or a neighbouring block changed
         /// (capability `redstone`): `input` is the signal on each face.
@@ -864,6 +885,33 @@ macro_rules! export_server_mod {
                 }
                 fn used(player: Player, entity: $crate::server::ModEntity) {
                     with(|m| m.entity_used(&player, &entity))
+                }
+            }
+            impl $crate::server::__GameEventsGuest for Export {
+                fn player_hurt(player: Player, amount: f32, health: f32) {
+                    with(|m| m.player_damaged(&player, amount, health))
+                }
+                fn player_died(player: Player, cause: String) {
+                    with(|m| m.player_died(&player, &cause))
+                }
+                fn player_respawned(player: Player) {
+                    with(|m| m.player_respawned(&player))
+                }
+                fn dimension_changed(player: Player, before: String, after: String) {
+                    with(|m| m.dimension_changed(&player, &before, &after))
+                }
+                fn game_mode_changed(
+                    player: Player,
+                    before: $crate::server::GameMode,
+                    after: $crate::server::GameMode,
+                ) {
+                    with(|m| m.game_mode_changed(&player, before, after))
+                }
+                fn mob_killed(player: Player, kind: String, id: u32) {
+                    with(|m| m.mob_killed(&player, &kind, id))
+                }
+                fn weather_changed(weather: String) {
+                    with(|m| m.weather_changed(&weather))
                 }
             }
             impl $crate::server::__RedstoneGuest for Export {

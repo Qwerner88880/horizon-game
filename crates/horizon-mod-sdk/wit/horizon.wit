@@ -1476,6 +1476,38 @@ interface entity-events {
     used: func(player: player, entity: entity);
 }
 
+/// Capability `game-events`, server mods only (manifest `api = "0.3"`,
+/// experimental): the server tells the mod what happens to players and the
+/// world, as a mod bus does: a player hurt, dead, back, in another dimension
+/// or game mode, a mob a player killed, the weather turning. These are
+/// notices, after the fact (a mod that must change the outcome uses the hooks
+/// of the capability that owns it: `item-hooks`' `player-hurt`, `entities`'
+/// `hurt`). A server mod built before it has no such export and keeps
+/// working. Within one tick the order of different events is not promised.
+interface game-events {
+    use players.{player, game-mode};
+    /// A player's health fell (`amount` points, to `health`): any damage,
+    /// whatever its source. Not told for a player who died of it (`died`
+    /// follows); a player healing is not told.
+    player-hurt: func(player: player, amount: f32, health: f32);
+    /// A player died. `cause` is the death message as vanilla writes it
+    /// ("Alex fell from a high place", "Alex was slain by Zombie"); empty
+    /// when the `showDeathMessages` rule hides it.
+    player-died: func(player: player, cause: string);
+    /// A dead player is alive again (they respawned).
+    player-respawned: func(player: player);
+    /// A player is in another dimension than the last tick.
+    dimension-changed: func(player: player, before: string, after: string);
+    /// A player's game mode changed.
+    game-mode-changed: func(player: player, before: game-mode, after: game-mode);
+    /// A player's blow killed a mob: its kind (`minecraft:zombie`) and its
+    /// entity id. Melee blows only: a bow, a trident or an explosion are not
+    /// told.
+    mob-killed: func(player: player, kind: string, id: u32);
+    /// The weather turned: `clear`, `rain` or `thunder`.
+    weather-changed: func(weather: string);
+}
+
 /// Capability `effects`, server mods only (manifest `api = "0.3"`,
 /// experimental): particles and sounds in the world the server simulates,
 /// sent to the players near them (particles within 32 blocks, a sound as far
@@ -1617,6 +1649,7 @@ world horizon-block-mod {
     export network-events;
     export entity-events;
     export redstone-events;
+    export game-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -1633,6 +1666,13 @@ world block-entity-host {
 world use-host {
     import players;
     export block-use-events;
+}
+
+/// The game's side of capability `game-events`: a world of its own, so
+/// server mods built before it (no `game-events` export) still load.
+world game-events-host {
+    import players;
+    export game-events;
 }
 
 /// The game's side of capability `effects` (imports only).

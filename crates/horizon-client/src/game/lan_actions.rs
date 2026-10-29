@@ -2331,6 +2331,7 @@ impl Game<'_> {
                     }
                     None => self.guest_death_message(conn, me),
                 };
+                self.mod_note_death(Some(uuid), text.plain());
                 let message = horizon_client::lan::data::component_nbt(&text.component());
                 let team = self.score.board.players_team(&name);
                 if horizon_client::scoreboard::own_death_message_shown(team) {

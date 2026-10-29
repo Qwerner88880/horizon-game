@@ -1116,6 +1116,7 @@ impl Game<'_> {
             None => self.combat_death_message(),
         };
         self.ui.death_text = Some(message.clone());
+        self.mod_note_death(None, message.plain());
         // ServerPlayer.die: a team that hides death messages keeps it out of
         // the dying player's own chat (the death screen still shows it).
         if horizon_client::scoreboard::own_death_message_shown(self.player_team()) {

@@ -102,6 +102,12 @@ pub(super) struct ModsState {
     /// of.
     #[cfg(feature = "mods")]
     pub(super) redstone_fed: u64,
+    /// Capability `game-events`: the death message of a player who died
+    /// this tick (by player id), and the weather last told.
+    #[cfg(feature = "mods")]
+    pub(super) death_causes: std::collections::HashMap<String, String>,
+    #[cfg(feature = "mods")]
+    pub(super) weather: Option<&'static str>,
     #[cfg(feature = "mods")]
     pub(super) emitters_key: Option<(std::path::PathBuf, String)>,
     /// Capability `items`: stacks to drop, by dimension, made in that level;

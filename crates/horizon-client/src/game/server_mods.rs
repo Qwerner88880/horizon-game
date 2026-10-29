@@ -93,6 +93,9 @@ pub(super) enum ModEvent {
     NetFromClient(Who, String, String, Vec<u8>),
     /// A player right-clicked a mod's mob (capability `entities`).
     EntityUse(Who, u32),
+    /// A player's blow killed a mob (capability `game-events`): its kind and
+    /// entity id.
+    MobKilled(Who, String, u32),
     /// A player used (right-clicked) an item a mod takes the behaviour of
     /// (capability `item-hooks`): the mod, the stack as the mod's
     /// inventories keep it, and the block under the crosshair if there was
@@ -143,6 +146,8 @@ impl Game<'_> {
     pub(in crate::game) fn mod_entity_hurt(&mut self, _index: usize, damage: f32) -> f32 {
         damage
     }
+    pub(in crate::game) fn mod_note_death(&mut self, _uuid: Option<u128>, _cause: String) {}
+    pub(in crate::game) fn mod_mob_killed(&mut self, _index: usize) {}
     pub(in crate::game) fn mod_entity_use(&mut self, _index: usize) -> bool {
         false
     }
@@ -937,6 +942,7 @@ mod run {
             {
                 self.mods.mods.player_joined(p);
             }
+            self.tell_game_events(&players, &before);
             for event in std::mem::take(&mut self.mods.events) {
                 let who = |w: &Who| {
                     let id = match w {
@@ -966,6 +972,11 @@ mod run {
                     ModEvent::MenuClosed(w, mod_id, menu) => {
                         if let Some(p) = who(&w) {
                             self.mods.mods.menu_closed(&mod_id, &p, &menu);
+                        }
+                    }
+                    ModEvent::MobKilled(w, kind, id) => {
+                        if let Some(p) = who(&w) {
+                            self.mods.mods.mob_killed(&p, &kind, id);
                         }
                     }
                     ModEvent::EntityUse(w, id) => {
@@ -1810,6 +1821,80 @@ mod run {
                     .inputs
                     .insert(key, read.map(|s| s.clamp(0, 15) as u8));
             }
+        }
+
+        /// Capability `game-events`: what changed about each player since the
+        /// last tick (their health, dimension and game mode), and the weather.
+        fn tell_game_events(
+            &mut self,
+            players: &[horizon_mods::ServerPlayer],
+            before: &[horizon_mods::ServerPlayer],
+        ) {
+            if !self.mods.mods.wants_game_events() {
+                self.mods.death_causes.clear();
+                return;
+            }
+            for p in players {
+                let Some(b) = before.iter().find(|q| q.id == p.id) else {
+                    continue;
+                };
+                if p.dimension != b.dimension {
+                    self.mods
+                        .mods
+                        .dimension_changed(p, &b.dimension, &p.dimension);
+                }
+                if p.game_mode != b.game_mode {
+                    self.mods
+                        .mods
+                        .game_mode_changed(p, b.game_mode, p.game_mode);
+                }
+                if b.health > 0.0 && p.health <= 0.0 {
+                    let cause = self.mods.death_causes.remove(&p.id).unwrap_or_default();
+                    self.mods.mods.player_died(p, &cause);
+                } else if b.health <= 0.0 && p.health > 0.0 {
+                    self.mods.mods.player_respawned(p);
+                } else if p.health > 0.0 && b.health - p.health > 0.001 {
+                    self.mods.mods.player_hurt(p, b.health - p.health, p.health);
+                }
+            }
+            self.mods.death_causes.clear();
+            let weather = if self.world.weather.thundering {
+                "thunder"
+            } else if self.world.weather.raining {
+                "rain"
+            } else {
+                "clear"
+            };
+            if self.mods.weather.is_some_and(|w| w != weather) {
+                self.mods.mods.weather_changed(weather);
+            }
+            self.mods.weather = Some(weather);
+        }
+
+        /// A player died of `cause` (the death message, plain): kept for the
+        /// tick's end, when the mods are told (capability `game-events`).
+        /// `uuid` None is the window's own player.
+        pub(in crate::game) fn mod_note_death(&mut self, uuid: Option<u128>, cause: String) {
+            if !self.mods.mods.wants_game_events() {
+                return;
+            }
+            let id = match uuid {
+                Some(u) => uuid_string(u),
+                None => self.player_uuid_string(),
+            };
+            self.mods.death_causes.insert(id, cause);
+        }
+
+        /// The acting player's blow killed mob `index` (capability
+        /// `game-events`).
+        pub(in crate::game) fn mod_mob_killed(&mut self, index: usize) {
+            if !self.hears_players() || !self.mods.mods.wants_game_events() {
+                return;
+            }
+            let m = &self.mobs[index];
+            let kind = format!("minecraft:{}", m.kind.id.trim_start_matches("minecraft:"));
+            let who = self.lan_acting.map_or(Who::Local, Who::Conn);
+            self.mods.events.push(ModEvent::MobKilled(who, kind, m.id));
         }
 
         /// A sound name as the game writes it: `minecraft:` unless it has a

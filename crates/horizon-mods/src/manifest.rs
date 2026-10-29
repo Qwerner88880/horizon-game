@@ -141,9 +141,11 @@ pub enum Capability {
     Redstone,
     /// Particles and sounds in the world, for the players near (server mods).
     Effects,
+    /// Notices of what happens to players and the world (server mods).
+    GameEvents,
 }
 impl Capability {
-    pub const ALL: [Capability; 26] = [
+    pub const ALL: [Capability; 27] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -170,6 +172,7 @@ impl Capability {
         Capability::Fluids,
         Capability::Redstone,
         Capability::Effects,
+        Capability::GameEvents,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's.
@@ -197,6 +200,7 @@ impl Capability {
                 | Capability::Fluids
                 | Capability::Redstone
                 | Capability::Effects
+                | Capability::GameEvents
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -228,6 +232,7 @@ impl Capability {
             Capability::Fluids => "fluids",
             Capability::Redstone => "redstone",
             Capability::Effects => "effects",
+            Capability::GameEvents => "game-events",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -253,6 +258,7 @@ impl Capability {
                 | Capability::Fluids
                 | Capability::Redstone
                 | Capability::Effects
+                | Capability::GameEvents
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -293,6 +299,9 @@ impl Capability {
             }
             Capability::Network => {
                 "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::GameEvents => {
+                "be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns"
             }
             Capability::Effects => {
                 "show particles and play sounds in the world for the players near them"
@@ -361,6 +370,7 @@ impl fmt::Display for Capability {
             Capability::Fluids => "fluids",
             Capability::Redstone => "redstone",
             Capability::Effects => "effects",
+            Capability::GameEvents => "game-events",
         };
         f.write_str(name)
     }

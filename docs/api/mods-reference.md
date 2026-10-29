@@ -33,6 +33,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `fluids` | [`fluids`](#fluids) | store fluids in its blocks and move fluids between any mod's blocks |
 | `redstone` | [`redstone`](#redstone) | read the redstone signals around its blocks and give redstone signals out of them |
 | `effects` | [`effects`](#effects) | show particles and play sounds in the world for the players near them |
+| `game-events` | [`game-events`](#game-events) | be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns |
 
 ## World `horizon-mod`
 
@@ -53,7 +54,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
 - Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `server-events`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -68,6 +69,13 @@ The game's side of `block-use-events`: a world of its own, so server mods built 
 
 - Imports (what the game offers): `players`
 - Exports (what the mod provides): `block-use-events`
+
+## World `game-events-host`
+
+The game's side of capability `game-events`: a world of its own, so server mods built before it (no `game-events` export) still load.
+
+- Imports (what the game offers): `players`
+- Exports (what the mod provides): `game-events`
 
 ## World `effects-host`
 
@@ -1393,6 +1401,30 @@ What the server calls in a server mod with capability `entities`. A server mod b
 | `died` | `func(entity: entity)` | A mob of the mod died, whatever killed it: told once, as it starts to fall; its loot drops as vanilla's. |
 | `removed` | `func(entity: entity)` | A mob of the mod is gone: after its death, removed, or despawned. Its last state. |
 | `used` | `func(player: player, entity: entity)` | A player right-clicked a mob of the mod that takes the use. |
+
+## `game-events`
+
+Access: exported by the mod: the game calls it.
+
+Capability `game-events`, server mods only (manifest `api = "0.3"`, experimental): the server tells the mod what happens to players and the world, as a mod bus does: a player hurt, dead, back, in another dimension or game mode, a mob a player killed, the weather turning. These are notices, after the fact (a mod that must change the outcome uses the hooks of the capability that owns it: `item-hooks`' `player-hurt`, `entities`' `hurt`). A server mod built before it has no such export and keeps working. Within one tick the order of different events is not promised.
+
+### type `player`
+
+`type player = player`
+
+### type `game-mode`
+
+`type game-mode = game-mode`
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `player-hurt` | `func(player: player, amount: f32, health: f32)` | A player's health fell (`amount` points, to `health`): any damage, whatever its source. Not told for a player who died of it (`died` follows); a player healing is not told. |
+| `player-died` | `func(player: player, cause: string)` | A player died. `cause` is the death message as vanilla writes it ("Alex fell from a high place", "Alex was slain by Zombie"); empty when the `showDeathMessages` rule hides it. |
+| `player-respawned` | `func(player: player)` | A dead player is alive again (they respawned). |
+| `dimension-changed` | `func(player: player, before: string, after: string)` | A player is in another dimension than the last tick. |
+| `game-mode-changed` | `func(player: player, before: game-mode, after: game-mode)` | A player's game mode changed. |
+| `mob-killed` | `func(player: player, kind: string, id: u32)` | A player's blow killed a mob: its kind (`minecraft:zombie`) and its entity id. Melee blows only: a bow, a trident or an explosion are not told. |
+| `weather-changed` | `func(weather: string)` | The weather turned: `clear`, `rain` or `thunder`. |
 
 ## `effects`
 

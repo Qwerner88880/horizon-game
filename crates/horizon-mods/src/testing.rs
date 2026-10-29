@@ -531,6 +531,64 @@ impl TestGame {
         }
         self.mods.player_items_tick(self.tick, &lists);
     }
+    /// Tells the mods an event of capability `game-events`, written as the
+    /// scripts write it: `hurt Alex 4 16` (name, points lost, health after),
+    /// `died Alex fell from a high place` (name, then the cause),
+    /// `respawned Alex`, `dimension Alex minecraft:overworld
+    /// minecraft:the_nether`, `mode Alex survival creative`, `killed Alex
+    /// minecraft:zombie 7` (name, kind, entity id) and `weather rain`.
+    pub fn game_event(&mut self, line: &str) -> Result<(), String> {
+        self.snapshot();
+        let mut words = line.split_whitespace();
+        let kind = words.next().ok_or("an empty game event")?;
+        let rest: Vec<&str> = words.collect();
+        if kind == "weather" {
+            let w = rest.first().ok_or("weather needs clear, rain or thunder")?;
+            self.mods.weather_changed(w);
+            return Ok(());
+        }
+        let name = rest
+            .first()
+            .ok_or_else(|| format!("{kind} needs a player"))?;
+        let player = self
+            .players
+            .iter()
+            .find(|p| p.name == *name)
+            .cloned()
+            .ok_or_else(|| format!("{name} is not on the server"))?;
+        let arg = |i: usize| -> Result<&str, String> {
+            rest.get(i)
+                .copied()
+                .ok_or_else(|| format!("{kind} needs more: {line:?}"))
+        };
+        let number = |i: usize| -> Result<f32, String> {
+            arg(i)?.parse::<f32>().map_err(|e| format!("{line:?}: {e}"))
+        };
+        let mode = |i: usize| -> Result<GameMode, String> {
+            Ok(match arg(i)? {
+                "survival" => GameMode::Survival,
+                "creative" => GameMode::Creative,
+                "adventure" => GameMode::Adventure,
+                "spectator" => GameMode::Spectator,
+                other => return Err(format!("{other:?} is not a game mode")),
+            })
+        };
+        match kind {
+            "hurt" => self.mods.player_hurt(&player, number(1)?, number(2)?),
+            "died" => self.mods.player_died(&player, &rest[1..].join(" ")),
+            "respawned" => self.mods.player_respawned(&player),
+            "dimension" => self.mods.dimension_changed(&player, arg(1)?, arg(2)?),
+            "mode" => self.mods.game_mode_changed(&player, mode(1)?, mode(2)?),
+            "killed" => {
+                let id = arg(2)?
+                    .parse::<u32>()
+                    .map_err(|e| format!("{line:?}: {e}"))?;
+                self.mods.mob_killed(&player, arg(1)?, id);
+            }
+            other => return Err(format!("{other:?} is not a game event")),
+        }
+        Ok(())
+    }
     /// `n` frames, 1/60 s apart.
     pub fn frames(&mut self, n: u64) {
         self.snapshot();
@@ -1117,6 +1175,13 @@ pub struct Step {
     use_item: Option<UseItemSet>,
     attack: Option<AttackSet>,
     hurt: Option<HurtSet>,
+    /// Server mods: events of capability `game-events` the mods are told, in
+    /// order, after `net` and before `command`: `"hurt Alex 4 16"`, `"died
+    /// Alex fell from a high place"`, `"respawned Alex"`, `"dimension Alex
+    /// minecraft:overworld minecraft:the_nether"`, `"mode Alex survival
+    /// creative"`, `"killed Alex minecraft:zombie 7"`, `"weather rain"`.
+    #[serde(default)]
+    game_events: Vec<String>,
     /// Server mods: the player strikes or right-clicks a mob of a mod
     /// (capability `entities`), after `hurt`.
     strike: Option<StrikeSet>,
@@ -1449,6 +1514,9 @@ impl Step {
                 Some(p) => game.net_from_client(p, &n.channel, n.data.as_bytes()),
                 None => game.net_from_server(&n.channel, n.data.as_bytes()),
             }
+        }
+        for line in &self.game_events {
+            game.game_event(line)?;
         }
         if let Some(s) = &self.select {
             game.ui_select(s.id, s.row);

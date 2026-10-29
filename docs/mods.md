@@ -685,6 +685,52 @@ vanilla pipes or hoppers seeing the tanks, fluids placed in the world as
 blocks of the mod's own fluid (a content mod can't declare a fluid yet), and
 showing a tank in a menu as a gauge.
 
+#### Game events (capability `game-events`, experimental)
+
+The server tells the mod what happens to players and the world, as a mod bus
+does. They are notices after the fact: a mod that must change an outcome uses
+the hook of the capability that owns it (`item-hooks`' `player_hurt` for
+armour, `entities`' `entity_hurt` for a mod's mobs). A mod implements only the
+ones it wants; a mod built before the capability has no such export and
+keeps working. Within one tick the order of different events is not promised.
+
+| `ServerMod` hook | Told when |
+| --- | --- |
+| `player_damaged(player, amount, health)` | a player's health fell, from any damage, whatever its source (not for the damage that killed them; healing is not told) |
+| `player_died(player, cause)` | a player died; `cause` is the death message as vanilla writes it, empty when the `showDeathMessages` rule hides it |
+| `player_respawned(player)` | a dead player is alive again |
+| `dimension_changed(player, before, after)` | a player is in another dimension than the last tick |
+| `game_mode_changed(player, before, after)` | a player's game mode changed |
+| `mob_killed(player, kind, id)` | a player's **melee** blow killed a mob (a bow, a trident or an explosion are not told) |
+| `weather_changed(weather)` | the weather turned: `clear`, `rain` or `thunder` |
+
+```rust
+fn player_died(&mut self, player: &Player, cause: &str) {
+    players::broadcast(&format!("{} died: {cause}", player.name));
+}
+```
+
+- **How they are found.** Health, dimension and game mode are compared once a
+  tick for every player (the window's own player, LAN guests and a dedicated
+  server's players alike); a death carries the message the game wrote for it.
+  So a hurt is told once a tick at most, with the total lost in it.
+- **Test scripts** tell the mods an event with `game-events = ["hurt Alex 4
+  16", "died Alex fell from a high place", "respawned Alex", "dimension Alex
+  minecraft:overworld minecraft:the_nether", "mode Alex survival creative",
+  "killed Alex minecraft:zombie 7", "weather rain"]` (in order, after `net`
+  and before `command`), and read what the mod did with `expect.told`,
+  `expect.broadcast` and the other checks. The `cells` example says when a
+  player dies, changes dimension or fells a mob, and when the weather turns.
+- **No level change.** The capability adds no function a mod calls, so the API
+  level stays where it was; an older Horizon refuses the mod's `game-events`
+  capability by name instead.
+
+**Not yet.** Damage sources and attackers for `player_damaged`, mobs killed
+by ranged weapons, explosions or other mobs, mob spawns and despawns, item
+pickups and drops, advancements, commands run by players, and events that a
+mod can cancel (blocks broken and placed, chat and the hooks above already
+exist as their own hooks).
+
 #### Particles and sounds (capability `effects`, experimental)
 
 A server mod shows particles and plays sounds in the world, for the players
