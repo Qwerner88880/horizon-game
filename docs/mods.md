@@ -792,6 +792,41 @@ New blocks come from a content mod (API 0.2, capability `registries`) that
 a server mod claims: `horizon-forge convert` carries a Java mod's blocks,
 models and textures over as one.
 
+#### World data (capability `saved-data`, experimental)
+
+Bytes a server mod keeps on the world itself, not tied to a block: the
+members of an energy network, who owns a claim, a list of teleports. The
+mod's `storage` folder (capability `storage`) is the mod's own, beside the
+mods; this is the world's, in `data/horizon/saved_data.json`, and travels
+with the world folder — whoever opens it next, the mod reads back what it
+wrote. The `cells` example keeps its power grids this way (`/cellnet`).
+
+```toml
+capabilities = ["saved-data"]
+experimental = ["saved-data"]
+```
+
+- **Keys and values.** `saved_data::get(key)` and `set(key, data)` read and
+  replace the bytes at `key` of the mod's own, `delete(key)` removes it,
+  `keys()` lists the keys in order, so a mod can walk its networks without
+  an index key of its own. Values are bytes; how they are encoded is the
+  mod's business (its own text, postcard, bincode).
+- **Limits.** Keys are `[a-z0-9_.-]{1,64}`, one path segment, as
+  `storage`'s. At most 64 KiB a key, 256 keys and 1 MiB a mod — the file
+  is rewritten with every save of the world, so the quota is smaller than
+  `storage`'s on purpose. For big data, `storage`; for data that must
+  travel with the world, this.
+- **When.** Read and written only during the server's hooks, as the block
+  entities are: a call outside them is an error, not a crash. Changes
+  reach the file when the world is saved, with it.
+- **Whose.** Each mod sees and changes only its own data, whatever key it
+  guesses; a disabled or missing mod's data stays in the file and is back
+  when it is enabled again.
+
+**Not yet.** No telling of another mod's changes, no versioning or
+migrations of the bytes, no sharing between mods; values are raw bytes,
+not for large data.
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is

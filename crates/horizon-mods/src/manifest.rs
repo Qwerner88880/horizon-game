@@ -122,9 +122,11 @@ pub enum Capability {
     /// `data/<id>/multiblock/` files, checked against the world (server
     /// mods).
     Multiblocks,
+    /// Data the mod keeps on the world itself, saved with it (server mods).
+    SavedData,
 }
 impl Capability {
-    pub const ALL: [Capability; 19] = [
+    pub const ALL: [Capability; 20] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -144,6 +146,7 @@ impl Capability {
         Capability::Items,
         Capability::MachineRecipes,
         Capability::Multiblocks,
+        Capability::SavedData,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -159,6 +162,7 @@ impl Capability {
                 | Capability::Items
                 | Capability::MachineRecipes
                 | Capability::Multiblocks
+                | Capability::SavedData
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -183,6 +187,7 @@ impl Capability {
             Capability::Items => "items",
             Capability::MachineRecipes => "machine-recipes",
             Capability::Multiblocks => "multiblocks",
+            Capability::SavedData => "saved-data",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -201,6 +206,7 @@ impl Capability {
                 | Capability::Items
                 | Capability::MachineRecipes
                 | Capability::Multiblocks
+                | Capability::SavedData
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -235,6 +241,7 @@ impl Capability {
             Capability::Multiblocks => {
                 "keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break"
             }
+            Capability::SavedData => "keep data of its own on the world, saved with the world",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -283,6 +290,7 @@ impl fmt::Display for Capability {
             Capability::Items => "items",
             Capability::MachineRecipes => "machine-recipes",
             Capability::Multiblocks => "multiblocks",
+            Capability::SavedData => "saved-data",
         };
         f.write_str(name)
     }

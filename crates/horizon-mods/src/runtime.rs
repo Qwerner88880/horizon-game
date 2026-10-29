@@ -192,6 +192,15 @@ mod multiblock_bindings {
 pub use multiblock_bindings::exports::horizon::mods::multiblock_events::Multiblock;
 pub use multiblock_bindings::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
 use multiblock_bindings::{MultiblockHost, horizon::mods::multiblocks};
+/// Capability `saved-data`' imports (docs/mods.md): bytes each server mod
+/// keeps on the world itself, saved with it.
+mod saved_data_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "saved-data-host",
+    });
+}
+use saved_data_bindings::horizon::mods::saved_data;
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -609,8 +618,9 @@ impl Mods {
         self.generation
     }
     /// Whether a running mod may use capability `world`, or keeps block
-    /// entities (checked against the world each tick): only then is a view
-    /// worth lending.
+    /// entities (checked against the world each tick), or keeps its own
+    /// data on the world (read and written through the lent stores): only
+    /// then is a view worth lending.
     pub fn wants_world(&self) -> bool {
         self.entries.iter().any(|e| {
             e.status == Status::Running
@@ -618,6 +628,7 @@ impl Mods {
                     || e.manifest.as_ref().is_some_and(|m| {
                         m.capabilities.contains(&crate::Capability::World)
                             || m.capabilities.contains(&crate::Capability::Multiblocks)
+                            || m.capabilities.contains(&crate::Capability::SavedData)
                     }))
         })
     }
@@ -1150,6 +1161,8 @@ impl Mods {
             machine_recipes::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             multiblocks::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            saved_data::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
@@ -2846,6 +2859,36 @@ fn wit_mismatch(m: crate::multiblocks::Mismatch) -> Mismatch {
         z: m.z,
         expected: m.expected,
         found: m.found,
+    }
+}
+
+/// The store of the mod's own data on the world (capability `saved-data`):
+/// the block entities' store holds it, lent in the same server's hooks, so
+/// a call outside them is an error, not a trap.
+impl saved_data::Host for State {
+    fn get(&mut self, key: String) -> Option<Vec<u8>> {
+        self.with_store(|s, id| s.saved_data.get(id, &key).map(<[u8]>::to_vec))
+            .ok()
+            .flatten()
+    }
+    fn set(&mut self, key: String, data: Vec<u8>) -> Result<(), String> {
+        if !storage_key_ok(&key) {
+            return Err(format!("{key:?} is not [a-z0-9_.-]{{1,64}}"));
+        }
+        self.with_store(|s, id| s.saved_data.set(id, &key, data))?
+    }
+    fn delete(&mut self, key: String) {
+        let _ = self.with_store(|s, id| s.saved_data.delete(id, &key));
+    }
+    fn keys(&mut self) -> Vec<String> {
+        self.with_store(|s, id| {
+            s.saved_data
+                .keys(id)
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
     }
 }
 

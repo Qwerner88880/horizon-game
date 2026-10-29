@@ -210,6 +210,7 @@ pub mod server {
     pub use horizon::mods::menus::{self, MenuItem, MenuSlot, SlotMode};
     pub use horizon::mods::multiblocks;
     pub use horizon::mods::players::{self, GameMode, Player};
+    pub use horizon::mods::saved_data;
     pub use horizon::mods::world::{self, BlockChange};
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks

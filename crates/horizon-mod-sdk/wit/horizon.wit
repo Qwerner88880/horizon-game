@@ -882,6 +882,26 @@ interface multiblocks {
     watch: func(dimension: string, x: s32, y: s32, z: s32, id: string) -> result<option<u32>, string>;
 }
 
+/// Capability `saved-data`, server mods only (manifest `api = "0.3"`,
+/// experimental): bytes a mod keeps on the world itself — the members of
+/// an energy network, who owns a claim, a list of teleports — saved with
+/// the world in data/horizon/saved_data.json. Not the mod's `storage`
+/// folder: this travels with the world, so whoever opens it next, the mod
+/// reads back what it wrote. Read and written only during the server's
+/// hooks, as the block entities are.
+interface saved-data {
+    /// The bytes at `key`, or none where the mod has none there. Keys are
+    /// `[a-z0-9_.-]{1,64}`, one path segment, as `storage`'s.
+    get: func(key: string) -> option<list<u8>>;
+    /// Replaces the bytes at `key`: an error for a malformed key, over
+    /// 64 KiB at one key, over 256 keys or over 1 MiB for the whole mod.
+    set: func(key: string, data: list<u8>) -> result<_, string>;
+    /// Removes `key` and its bytes. No error where it has none.
+    delete: func(key: string);
+    /// The mod's keys, in order.
+    keys: func() -> list<string>;
+}
+
 /// Capability `menus`, server mods only (manifest `api = "0.3"`,
 /// experimental): chest menus the mod opens for a player, with items of its
 /// own in the slots. Players see and click them but can't take the items;
@@ -1183,6 +1203,7 @@ world horizon-block-mod {
     import items;
     import machine-recipes;
     import multiblocks;
+    import saved-data;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -1227,6 +1248,11 @@ world machine-recipes-host {
 world multiblock-host {
     import multiblocks;
     export multiblock-events;
+}
+
+/// The game's side of capability `saved-data` (imports only).
+world saved-data-host {
+    import saved-data;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

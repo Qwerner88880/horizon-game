@@ -26,6 +26,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `items` | [`items`](#items) | keep items in its blocks and move items between any mod's blocks |
 | `machine-recipes` | [`machine-recipes`](#machine-recipes) | read the recipes of its own machines from data files |
 | `multiblocks` | [`multiblocks`](#multiblocks) | keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break |
+| `saved-data` | [`saved-data`](#saved-data) | keep data of its own on the world, saved with the world |
 
 ## World `horizon-mod`
 
@@ -45,7 +46,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `server-events`
 
 ## World `block-entity-host`
@@ -89,6 +90,13 @@ The game's side of capability `multiblocks`: a world of its own, so server mods 
 
 - Imports (what the game offers): `multiblocks`
 - Exports (what the mod provides): `multiblock-events`
+
+## World `saved-data-host`
+
+The game's side of capability `saved-data` (imports only).
+
+- Imports (what the game offers): `saved-data`
+- Exports (what the mod provides): 
 
 ## World `horizon-ui-mod`
 
@@ -870,6 +878,19 @@ Capability `multiblocks`, server mods only (manifest `api = "0.3"`, experimental
 | `all` | `func() -> list<structure>` | The mod's structures, loaded before `init` and never changed while it runs — call once in `init` and keep. At most 64 a mod. |
 | `check` | `func(dimension: string, x: s32, y: s32, z: s32, quarter: u32, id: string) -> result<option<list<mismatch>>, string>` | Matches structure `id` against the world with its anchor's block entity at a position, turned by `quarter` quarter turns clockwise looked at from above (0 to 3; y offsets don't turn). ok(none): the structure is whole; ok(some): the first mismatches, at most 16. Err for no such structure of this mod, a `quarter` past 3, no chunk of the structure loaded, or no world lent (this is a read of the server's world: it answers during the server's hooks). |
 | `watch` | `func(dimension: string, x: s32, y: s32, z: s32, id: string) -> result<option<u32>, string>` | Asks the game to follow the copy of structure `id` whose anchor is the mod's block entity at a position: about once a second the game checks it, calling `multiblock-events.formed` when it has come together and `broken` when it no longer holds. The answer is the quarter it is whole at — as of this call where the world is lent (the hook that calls it, a command), else as of the last check, about a second ago — and none where it isn't whole (or was never checked yet; kept across saves). Err where the mod has no block entity, or it watches over 256. Calling again is fine: it retells the same copy, and brings a check up to date at once where the world is lent. |
+
+## `saved-data`
+
+Access: capability `saved-data`.
+
+Capability `saved-data`, server mods only (manifest `api = "0.3"`, experimental): bytes a mod keeps on the world itself — the members of an energy network, who owns a claim, a list of teleports — saved with the world in data/horizon/saved_data.json. Not the mod's `storage` folder: this travels with the world, so whoever opens it next, the mod reads back what it wrote. Read and written only during the server's hooks, as the block entities are.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `get` | `func(key: string) -> option<list<u8>>` | The bytes at `key`, or none where the mod has none there. Keys are `[a-z0-9_.-]{1,64}`, one path segment, as `storage`'s. |
+| `set` | `func(key: string, data: list<u8>) -> result<_, string>` | Replaces the bytes at `key`: an error for a malformed key, over 64 KiB at one key, over 256 keys or over 1 MiB for the whole mod. |
+| `delete` | `func(key: string)` | Removes `key` and its bytes. No error where it has none. |
+| `keys` | `func() -> list<string>` | The mod's keys, in order. |
 
 ## `menus`
 
