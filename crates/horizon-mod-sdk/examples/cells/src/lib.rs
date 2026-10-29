@@ -211,9 +211,9 @@ fn held_data(energy: u64) -> Vec<u8> {
 /// [`STEP`], never past either's capacity.
 fn held_flow(held: u64, cell: u64) -> (bool, u64) {
     if held < cell {
-        (true, STEP.min(cell).min(HELD_CAPACITY - held))
+        (true, STEP.min(cell - held).min(HELD_CAPACITY - held))
     } else {
-        (false, STEP.min(held).min(CAPACITY - cell))
+        (false, STEP.min(held - cell).min(CAPACITY - cell))
     }
 }
 
@@ -273,6 +273,7 @@ fn set_held(player: &Player, item: &str, energy: u64) -> bool {
 }
 
 /// What a use of the main hand's staff is.
+#[derive(Debug, PartialEq, Eq)]
 enum StaffUse {
     /// The charge left after a spend.
     Spend(u64),
@@ -296,7 +297,11 @@ fn staff_use(count: u32, energy: u64) -> StaffUse {
 /// A blow with the staff: the charge left after its cost, where it has it
 /// (and is one item); None keeps vanilla's damage.
 fn staff_blow(count: u32, energy: u64) -> Option<u64> {
-    (count == 1 && energy >= BLOW_COST).then_some(energy - BLOW_COST)
+    if count == 1 && energy >= BLOW_COST {
+        Some(energy - BLOW_COST)
+    } else {
+        None
+    }
 }
 
 /// The hurt a charged helmet takes: the fixed share, or all its charge
@@ -1121,11 +1126,11 @@ mod tests {
     fn held_flow_fills_the_emptier_side() {
         assert_eq!(held_flow(0, STEP), (true, STEP));
         assert_eq!(held_flow(500, STEP), (true, 500));
-        // The cell the fuller: the held stack takes.
-        assert_eq!(held_flow(9_000, 1_000), (true, STEP));
+        // The held stack the fuller: the cell takes.
+        assert_eq!(held_flow(9_000, 1_000), (false, STEP));
         // The held stack the fuller: the cell takes.
         assert_eq!(held_flow(STEP, 0), (false, STEP));
-        assert_eq!(held_flow(2 * STEP, 1_500), (false, 1_500));
+        assert_eq!(held_flow(2 * STEP, 1_500), (false, 500));
         // Neither past its capacity.
         assert_eq!(held_flow(HELD_CAPACITY - 10, CAPACITY), (true, 10));
         assert_eq!(held_flow(HELD_CAPACITY, CAPACITY - 10), (false, 10));
