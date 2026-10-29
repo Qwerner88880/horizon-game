@@ -156,3 +156,61 @@ place = { x = 0, y = 63, z = 0, state = "minecraft:stone" }
 ticks = 5
 command = "cell"
 expect.error = "No cell there"
+
+# The mod's world data (capability saved-data): /cellnet <name> joins the
+# cell to a power grid kept on the world itself, not in the mod's memory.
+[[step]]
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+command = "cellnet main"
+expect.feedback = "Cell at 0 63 0 joined grid main"
+
+[[step]]
+place = { x = 5, y = 63, z = 5, state = "minecraft:lodestone" }
+
+# The second cell is under the player only after they walk to it (cellnet
+# takes no pos: the parser has no backtracking, so a pos argument would
+# eat a grid name as a coordinate).
+[[step]]
+player = { x = 5.5, y = 64.0, z = 5.5 }
+ticks = 1
+command = "cellnet aux"
+expect.feedback = "Cell at 5 63 5 joined grid aux"
+
+[[step]]
+command = "cellnet"
+expect.feedback = "Grids: aux (1 cell), main (1 cell)"
+
+[[step]]
+command = "cellnet MAIN"
+expect.error = "a grid name is [a-z0-9_.-]{1,64}"
+
+# The grids live in the world's store: a restart of the mod (a rebuild)
+# loses nothing.
+[[step]]
+reload = true
+
+[[step]]
+ticks = 1
+command = "cellnet"
+expect.feedback = "Grids: aux (1 cell), main (1 cell)"
+
+# Breaking a cell takes it out of its grid; the last cell takes the grid
+# with it.
+[[step]]
+break = { x = 5, y = 63, z = 5, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+command = "cellnet"
+expect.feedback = "Grids: main (1 cell)"
+
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+command = "cellnet"
+expect.feedback = "No grids"

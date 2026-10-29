@@ -18,11 +18,15 @@
 //! `data/cells/multiblock/`): a ring of iron around the cell, watched from
 //! its first tick, so the game tells when it comes together and when it no
 //! longer holds; a standing core charges its cell ten times over, and
-//! `/cellcore` says it is whole or names the first block it needs.
+//! `/cellcore` says it is whole or names the first block it needs. Its
+//! power grids (capability `saved-data`) are data on the world itself:
+//! `/cellnet <name>` joins the cell under the player to a grid, `/cellnet`
+//! lists them; a grid goes when its last cell does, and a restart of the
+//! mod loses nothing.
 use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, MenuItem, MenuSlot, Multiblock, Player, Registration, ServerMod,
     Shape, SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items,
-    machine_recipes, menus, multiblocks, players,
+    machine_recipes, menus, multiblocks, players, saved_data,
 };
 use std::collections::BTreeMap;
 
@@ -151,12 +155,17 @@ fn view(stored: u64) -> Vec<MenuItem> {
 fn target(player: &Player, args: &Args) -> (i32, i32, i32) {
     match args.block_pos("pos") {
         Some(p) => (p.x, p.y, p.z),
-        None => (
-            player.x.floor() as i32,
-            player.y.floor() as i32 - 1,
-            player.z.floor() as i32,
-        ),
+        None => under(player),
     }
+}
+
+/// The block under `player`.
+fn under(player: &Player) -> (i32, i32, i32) {
+    (
+        player.x.floor() as i32,
+        player.y.floor() as i32 - 1,
+        player.z.floor() as i32,
+    )
 }
 
 /// What a cell of the first version kept in its data (8 bytes,
@@ -191,6 +200,91 @@ fn core_missing(m: &multiblocks::Mismatch) -> String {
         "needs {} at {} {} {} ({} there)",
         m.expected, m.x, m.y, m.z, m.found
     )
+}
+
+/// A grid name is a saved-data key: one path segment of `[a-z0-9_.-]{1,64}`,
+/// not `.` or `..`.
+fn grid_name_ok(name: &str) -> bool {
+    let chars_ok = (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
+    chars_ok && name != "." && name != ".."
+}
+
+/// One member of a grid, as the grid's value holds it, a line: where the
+/// cell stands.
+fn member(dimension: &str, x: i32, y: i32, z: i32) -> String {
+    format!("{dimension} {x} {y} {z}")
+}
+
+/// The grid's value for its members: the lines joined. None for no members
+/// — a grid is deleted, not kept empty.
+fn grid_value(members: &[String]) -> Option<Vec<u8>> {
+    (!members.is_empty()).then(|| members.join("\n").into_bytes())
+}
+
+/// The members a grid's value holds, parsed back.
+fn members_of(value: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(value)
+        .split('\n')
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The members without `member`: none where the grid empties, for a grid
+/// does not outlive its last cell.
+fn without(members: &[String], member: &str) -> Option<Vec<String>> {
+    let mut left = members.to_vec();
+    left.retain(|m| m != member);
+    (!left.is_empty()).then_some(left)
+}
+
+/// The members of grid `name` (capability `saved-data`).
+fn grid_members(name: &str) -> Vec<String> {
+    saved_data::get(name).map_or_else(Vec::new, |value| members_of(&value))
+}
+
+/// The mod's grids with their cells (capability `saved-data`), in the
+/// store's order. Read anew each call: nothing is kept in the mod's own
+/// memory, so a restart of it loses nothing.
+fn grids() -> Vec<(String, usize)> {
+    saved_data::keys()
+        .into_iter()
+        .map(|name| {
+            let cells = grid_members(&name).len();
+            (name, cells)
+        })
+        .collect()
+}
+
+/// Joins the cell at a place to grid `name` (capability `saved-data`):
+/// joining again changes nothing, the members a set.
+fn join_grid(dimension: &str, x: i32, y: i32, z: i32, name: &str) -> Result<(), String> {
+    let cell = member(dimension, x, y, z);
+    let mut members = grid_members(name);
+    if !members.contains(&cell) {
+        members.push(cell);
+    }
+    let value = grid_value(&members).expect("one member at least");
+    saved_data::set(name, &value)
+}
+
+/// Takes the cell at a place out of every grid it is in (capability
+/// `saved-data`); a grid that empties goes with it, so the mod's data on
+/// the world does not outlive its last cell.
+fn leave_grids(dimension: &str, x: i32, y: i32, z: i32) {
+    let cell = member(dimension, x, y, z);
+    for name in saved_data::keys() {
+        match without(&grid_members(&name), &cell) {
+            Some(members) => {
+                let value = grid_value(&members).expect("kept members");
+                let _ = saved_data::set(&name, &value);
+            }
+            None => saved_data::delete(&name),
+        }
+    }
 }
 
 /// One tick of every cell: each charges by its gain (a standing core's
@@ -238,6 +332,7 @@ impl ServerMod for Cells {
                 .command_with("cellgui", [Argument::block_pos("pos").optional()])
                 .command_with("cellitems", [Argument::block_pos("pos").optional()])
                 .command_with("cellcore", [Argument::block_pos("pos").optional()])
+                .command_with("cellnet", [Argument::word("name").optional()])
                 .command_with("cellrecipes", []),
         ))
     }
@@ -361,6 +456,8 @@ impl ServerMod for Cells {
         let (text, core) = display_names(&entity.dimension, entity.x, entity.y, entity.z);
         displays::hide(&text);
         displays::hide(&core);
+        // The cell leaves its grids too; a grid that empties goes with it.
+        leave_grids(&entity.dimension, entity.x, entity.y, entity.z);
         let here = (entity.dimension.clone(), entity.x, entity.y, entity.z);
         let watching: Vec<String> = self
             .open
@@ -400,6 +497,41 @@ impl ServerMod for Cells {
             return match core_need(d, x, y, z)? {
                 None => Ok(Some(format!("The core at {x} {y} {z} is whole"))),
                 Some(need) => Ok(Some(need)),
+            };
+        }
+        if name == "cellnet" {
+            // The cell under the player only: the parser has no
+            // backtracking, so a `pos` argument before `name` would eat a
+            // grid name as a coordinate.
+            return match args.string("name") {
+                // The grids with their cells, in the store's order.
+                None => {
+                    let grids = grids();
+                    Ok(Some(if grids.is_empty() {
+                        "No grids".into()
+                    } else {
+                        let named = |(name, cells): &(String, usize)| {
+                            format!(
+                                "{name} ({cells} cell{})",
+                                if *cells == 1 { "" } else { "s" }
+                            )
+                        };
+                        format!(
+                            "Grids: {}",
+                            grids.iter().map(named).collect::<Vec<_>>().join(", ")
+                        )
+                    }))
+                }
+                Some(grid) => {
+                    if !grid_name_ok(grid) {
+                        return Err("a grid name is [a-z0-9_.-]{1,64}".into());
+                    }
+                    let (x, y, z) = under(player);
+                    let d = &player.dimension;
+                    block_entities::get(d, x, y, z).ok_or("No cell there")?;
+                    join_grid(d, x, y, z, grid)?;
+                    Ok(Some(format!("Cell at {x} {y} {z} joined grid {grid}")))
+                }
             };
         }
         let (x, y, z) = target(player, args);
@@ -642,5 +774,50 @@ mod tests {
             core_missing(&missing),
             "needs minecraft:iron_block at -1 62 -1 (minecraft:air[axis=y] there)"
         );
+    }
+
+    #[test]
+    fn grid_values_round_trip() {
+        let members = [
+            member("minecraft:overworld", 0, 63, 0),
+            member("minecraft:overworld", 5, 63, 5),
+        ];
+        let value = grid_value(&members).expect("members");
+        assert_eq!(members_of(&value), members);
+        // The value is text a person can read in the world's file.
+        assert_eq!(
+            String::from_utf8(value).unwrap(),
+            "minecraft:overworld 0 63 0\nminecraft:overworld 5 63 5"
+        );
+        assert_eq!(grid_value(&[]), None);
+    }
+
+    #[test]
+    fn the_last_cell_takes_the_grid_with_it() {
+        let cell = member("minecraft:overworld", 0, 63, 0);
+        let alone = [cell.clone()];
+        assert_eq!(without(&alone, &cell), None);
+        let two = [cell, member("minecraft:overworld", 5, 63, 5)];
+        let left = without(&two, &two[0]).expect("one left");
+        assert_eq!(left, [two[1].clone()]);
+        // A cell no grid holds changes nothing.
+        assert_eq!(
+            without(&two, &member("minecraft:overworld", 9, 9, 9)),
+            Some(two.to_vec())
+        );
+    }
+
+    #[test]
+    fn grid_names_are_saved_data_keys() {
+        assert_eq!(
+            member("minecraft:overworld", 5, 63, 5),
+            "minecraft:overworld 5 63 5"
+        );
+        for name in ["main", "aux", "n1", "a.b-c_d"] {
+            assert!(grid_name_ok(name), "{name}");
+        }
+        for name in ["MAIN", "", "a b", "a/b", ".", "..", &"x".repeat(65)] {
+            assert!(!grid_name_ok(name), "{name}");
+        }
     }
 }
