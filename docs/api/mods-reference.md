@@ -22,7 +22,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `block-entities` | [`block-entities`](#block-entities) | keep its own data on the blocks it claims, saved with the world |
 | `energy` | [`energy`](#energy) | store energy in its blocks and move energy between any mod's blocks |
 | `menus` | [`menus`](#menus) | open menus of its own for you, and see what you click in them |
-| `displays` | [`displays`](#displays) | show block models and text of its own in the world |
+| `displays` | [`displays`](#displays) | show block models, items and text of its own in the world, moved smoothly or riding its mobs |
 | `items` | [`items`](#items) | keep items in its blocks and move items between any mod's blocks |
 | `machine-recipes` | [`machine-recipes`](#machine-recipes) | read the recipes of its own machines from data files |
 | `multiblocks` | [`multiblocks`](#multiblocks) | keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break |
@@ -1044,7 +1044,7 @@ What a menu slot bound to an inventory takes.
 
 Access: capability `displays`.
 
-Capability `displays`, server mods only (manifest `api = "0.3"`, experimental): things a mod shows in the world that are not blocks: a block's model or floating text, moved, scaled and turned freely, the client animating each change. Each is a vanilla display entity (`block_display`, `text_display`) the server sends the players in its dimension; it lasts while the mod runs and is never saved.
+Capability `displays`, server mods only (manifest `api = "0.3"`, experimental): things a mod shows in the world that are not blocks: a block's model, an item's model or floating text, moved, scaled and turned freely, the client animating each change; moved without remaking it (`move`) and carried by one of the mod's mobs (`ride`). Each is a vanilla display entity (`block_display`, `item_display`, `text_display`) the server sends the players in its dimension; it lasts while the mod runs and is never saved.
 
 ### record `transform`
 
@@ -1061,10 +1061,23 @@ Capability `displays`, server mods only (manifest `api = "0.3"`, experimental): 
 | `block` | `string` | A block's model (`minecraft:redstone_block`), from the display's position as its corner. |
 | `text` | `string` | Floating text, turned toward whoever looks at it. |
 
+### record `item-stack`
+
+A stack whose model a display shows (`show-item`).
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` | `minecraft:nether_star`, `<mod>:<path>`. |
+| `count` | `u32` | 1 to 99; a display's stack is a look, not storage. |
+| `components` | `string` | Components beyond the item's own, in vanilla's item syntax; empty for none. Up to 512 bytes. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `show` | `func(name: string, dimension: string, x: f64, y: f64, z: f64, shape: shape, transform: transform, interpolation: u32) -> result<_, string>` | Shows the mod's display `name`, or changes it: its shape, position and transform, which the client moves to over `interpolation` ticks (0: at once). An error for an unknown dimension or block, or past 1024 displays. |
 | `hide` | `func(name: string)` | Removes the mod's display `name`, if it has one. |
+| `show-item` | `func(name: string, dimension: string, x: f64, y: f64, z: f64, stack: item-stack, transform: transform, interpolation: u32) -> result<_, string>` | Shows the mod's display `name` as `stack`'s model, or changes it, as `show` does its shapes: the client moves to the new position and transform over `interpolation` ticks. An error for an unknown dimension or item, a count or components out of range; past 1024 displays the game drops it (as `show`). |
+| `move` | `func(name: string, x: f64, y: f64, z: f64, interpolation: u32) -> result<_, string>` | Moves the mod's display `name` — any shape — to a position: the client walks it there over `interpolation` ticks (0: at once; the client takes at most 59), the display is not remade. An error for a position that is not finite; a display the mod has none of does nothing. A display riding a mob is put down first. |
+| `ride` | `func(name: string, entity: option<u32>) -> result<_, string>` | Makes the mod's display `name` ride the mod's mob `entity` (capability `entities`), of the same dimension, so it is carried along: it sits where the mob stands, lifted by its own transform. None puts it down where it stands. An error while mobs are not lent (the server's hooks only) or no mob of this mod has that id; past 16 displays on one mob the game drops the ride (as `show` past 1024). |
 
 ## `item-hooks`
 

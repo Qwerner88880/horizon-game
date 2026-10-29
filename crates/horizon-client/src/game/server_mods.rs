@@ -70,11 +70,15 @@ pub(super) struct ModDisplay {
     pub(super) name: String,
     pub(super) dimension: String,
     pub(super) pos: [f64; 3],
-    /// `minecraft:block_display` or `minecraft:text_display`.
+    /// `minecraft:block_display`, `minecraft:item_display` or
+    /// `minecraft:text_display`.
     pub(super) kind: &'static str,
     pub(super) meta: Vec<(u8, i32, horizon_protocol::entity_data::Value)>,
     /// The connections that have it.
     pub(super) sent: Vec<u32>,
+    /// The mob that carries it (`ride`): its entity id, `None` while it
+    /// stands on its own.
+    pub(super) riding: Option<u32>,
 }
 
 /// What players did during a tick, for the server mods at its end.
@@ -198,6 +202,10 @@ mod run {
 
     /// Mods' display entities take ids from here up, past the world's.
     const FIRST_DISPLAY_ID: i32 = 0x6000_0000;
+
+    /// Displays one mob may carry (`ride`): past them the ride is dropped,
+    /// as `show` past its displays.
+    const RIDERS_PER_MOB: usize = 16;
 
     /// A display's data (`Display`'s, then `BlockDisplay`'s or
     /// `TextDisplay`'s): its transform, over `interpolation` ticks.
@@ -1433,6 +1441,66 @@ mod run {
             Self::sync_displays(&mut self.mods.displays, &self.mods.mods, host);
         }
 
+        /// Shows or changes a display entity (`show`, `show-item`): when it
+        /// keeps its kind, dimension and position only its data changes (the
+        /// client blends to it), otherwise it is remade; past
+        /// [`horizon_mods::MAX_DISPLAYS`] displays of the mod the new one is
+        /// dropped, as `show`'s contract says.
+        fn place_display(
+            displays: &mut Vec<ModDisplay>,
+            next_display: &mut i32,
+            mods: &horizon_mods::Mods,
+            host: &mut LanHost,
+            mod_id: String,
+            name: String,
+            dimension: String,
+            pos: [f64; 3],
+            kind: &'static str,
+            meta: Vec<(u8, i32, Data)>,
+        ) {
+            let at = displays
+                .iter()
+                .position(|d| d.mod_id == mod_id && d.name == name);
+            if let Some(i) = at {
+                let d = &mut displays[i];
+                if d.kind == kind && d.dimension == dimension && d.pos == pos {
+                    // Only the data changes: the client blends to it.
+                    for conn in &d.sent {
+                        host.hub.send_to(
+                            *conn,
+                            &C::SetEntityData(play::SetEntityData {
+                                id: d.id,
+                                values: meta.clone(),
+                            }),
+                        );
+                    }
+                    d.meta = meta;
+                    return;
+                }
+                let d = displays.remove(i);
+                Self::remove_display(host, &d);
+            }
+            let count = displays.iter().filter(|d| d.mod_id == mod_id).count();
+            if count >= horizon_mods::MAX_DISPLAYS {
+                log::warn!("Horizon: mod {mod_id} shows {count} displays already");
+                return;
+            }
+            let id = FIRST_DISPLAY_ID + *next_display;
+            *next_display = (*next_display + 1) % 0x0FFF_FFFF;
+            displays.push(ModDisplay {
+                id,
+                mod_id,
+                name,
+                dimension,
+                pos,
+                kind,
+                meta,
+                sent: Vec::new(),
+                riding: None,
+            });
+            Self::sync_displays(displays, mods, host);
+        }
+
         fn sync_displays(
             displays: &mut Vec<ModDisplay>,
             mods: &horizon_mods::Mods,
@@ -1488,6 +1556,14 @@ mod run {
                             values: d.meta.clone(),
                         }),
                     );
+                    if let Some(v) = d.riding {
+                        // A guest that already tracks the mob it rides holds
+                        // its passengers as they were; the display joins them
+                        // now, from the hub's book (one list with the mob's
+                        // own riders).
+                        host.hub
+                            .send_to(conn, &host.hub.riding.set_passengers(v as i32));
+                    }
                     d.sent.push(conn);
                 }
             }
@@ -2603,53 +2679,147 @@ mod run {
                     let Some(host) = host.or(self.lan.as_mut()) else {
                         return;
                     };
-                    let at = self
-                        .mods
-                        .displays
-                        .iter()
-                        .position(|d| d.mod_id == mod_id && d.name == name);
-                    if let Some(i) = at {
-                        let d = &mut self.mods.displays[i];
-                        if d.kind == kind && d.dimension == dimension && d.pos == pos {
-                            // Only the data changes: the client blends to it.
-                            for conn in &d.sent {
-                                host.hub.send_to(
-                                    *conn,
-                                    &C::SetEntityData(play::SetEntityData {
-                                        id: d.id,
-                                        values: meta.clone(),
-                                    }),
-                                );
-                            }
-                            d.meta = meta;
-                            return;
-                        }
-                        let d = self.mods.displays.remove(i);
-                        Self::remove_display(host, &d);
-                    }
-                    let count = self
-                        .mods
-                        .displays
-                        .iter()
-                        .filter(|d| d.mod_id == mod_id)
-                        .count();
-                    if count >= horizon_mods::MAX_DISPLAYS {
-                        log::warn!("Horizon: mod {mod_id} shows {count} displays already");
-                        return;
-                    }
-                    let id = FIRST_DISPLAY_ID + self.mods.next_display;
-                    self.mods.next_display = (self.mods.next_display + 1) % 0x0FFF_FFFF;
-                    self.mods.displays.push(ModDisplay {
-                        id,
+                    Self::place_display(
+                        &mut self.mods.displays,
+                        &mut self.mods.next_display,
+                        &self.mods.mods,
+                        host,
                         mod_id,
                         name,
                         dimension,
                         pos,
                         kind,
                         meta,
-                        sent: Vec::new(),
-                    });
-                    Self::sync_displays(&mut self.mods.displays, &self.mods.mods, host);
+                    );
+                }
+                Output::ShowItemDisplay {
+                    mod_id,
+                    name,
+                    dimension,
+                    pos,
+                    stack,
+                    transform,
+                    interpolation,
+                } => {
+                    let Some(item) = self.mod_stack(&stack.item, stack.count, &stack.components)
+                    else {
+                        log::debug!("Horizon: mod {mod_id} shows unknown item {}", stack.item);
+                        return;
+                    };
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    // An item display's data is the display's own; the stack
+                    // is the hub's, with the registries' ids, and no
+                    // billboard: an item display keeps vanilla's FIXED.
+                    let mut meta = display_meta(None, None, &transform, interpolation);
+                    meta.push((
+                        23,
+                        serializer::ITEM_STACK,
+                        Data::Item(host.hub.stack(&Some(item))),
+                    ));
+                    Self::place_display(
+                        &mut self.mods.displays,
+                        &mut self.mods.next_display,
+                        &self.mods.mods,
+                        host,
+                        mod_id,
+                        name,
+                        dimension,
+                        pos,
+                        "minecraft:item_display",
+                        meta,
+                    );
+                }
+                Output::MoveDisplay {
+                    mod_id,
+                    name,
+                    pos,
+                    interpolation,
+                } => {
+                    let Some(d) = self
+                        .mods
+                        .displays
+                        .iter_mut()
+                        .find(|d| d.mod_id == mod_id && d.name == name)
+                    else {
+                        // As `hide`: a display the mod has none of does nothing.
+                        return;
+                    };
+                    d.riding = None;
+                    d.pos = pos;
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    for conn in &d.sent {
+                        // `teleport_duration` (index 10) is how many ticks the
+                        // client walks an entity to a position sent after it;
+                        // the move itself is the sync packet every entity
+                        // moves by, without remaking the display.
+                        host.hub.send_to(
+                            *conn,
+                            &C::SetEntityData(play::SetEntityData {
+                                id: d.id,
+                                values: vec![(
+                                    10,
+                                    serializer::INT,
+                                    Data::Int(interpolation as i32),
+                                )],
+                            }),
+                        );
+                        host.hub.send_to(
+                            *conn,
+                            &C::EntityPositionSync(play::EntityPositionSync {
+                                id: d.id,
+                                path: play::PositionPath::Linear(pos),
+                                yaw: 0.0,
+                                pitch: 0.0,
+                                on_ground: true,
+                            }),
+                        );
+                    }
+                }
+                Output::RideDisplay {
+                    mod_id,
+                    name,
+                    entity,
+                } => {
+                    let Some(i) = self
+                        .mods
+                        .displays
+                        .iter()
+                        .position(|d| d.mod_id == mod_id && d.name == name)
+                    else {
+                        return;
+                    };
+                    if self.mods.displays[i].riding == entity {
+                        // Nothing changes, so nothing is sent: the hub tells
+                        // the clients only when a mob's passengers do.
+                        return;
+                    }
+                    if let Some(id) = entity {
+                        let carrier = self.mobs.iter().any(|m| m.id == id && !m.removed)
+                            && self.mods.displays[i].dimension == self.dim.id();
+                        if !carrier {
+                            log::debug!(
+                                "Horizon: mod {mod_id}'s display {name} rides no mob {id} here"
+                            );
+                            return;
+                        }
+                        let riders = self
+                            .mods
+                            .displays
+                            .iter()
+                            .filter(|d| d.riding == Some(id))
+                            .count();
+                        if riders >= RIDERS_PER_MOB {
+                            log::warn!("Horizon: mob {id} carries {riders} displays already");
+                            return;
+                        }
+                        self.mods.displays[i].riding = Some(id);
+                    } else {
+                        self.mods.displays[i].riding = None;
+                    }
                 }
                 Output::HideDisplay { mod_id, name } => {
                     let Some(i) = self

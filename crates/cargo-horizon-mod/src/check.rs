@@ -283,6 +283,16 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::CloseMenu { .. } => "closed its menu".to_string(),
             Output::ShowDisplay { name, .. } => format!("showed display {name}"),
             Output::HideDisplay { name, .. } => format!("hid display {name}"),
+            Output::ShowItemDisplay { name, stack, .. } => {
+                format!("showed display {name} as {} x{}", stack.item, stack.count)
+            }
+            Output::MoveDisplay { name, .. } => format!("moved display {name}"),
+            Output::RideDisplay {
+                name,
+                entity: Some(id),
+                ..
+            } => format!("made display {name} ride mob {id}"),
+            Output::RideDisplay { name, .. } => format!("put display {name} down"),
             Output::OpenScreen { .. } => "opened a screen".to_string(),
             Output::CloseScreen { .. } => "closed its screen".to_string(),
             Output::PlaceRecipe { book_id, all } => {
@@ -292,6 +302,29 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::Shake { strength, seconds } => {
                 format!("shook the camera: {strength:.2} for {seconds:.1} s")
             }
+            Output::NetToClient { channel, .. } => format!("sent a {channel} message"),
+            Output::NetToServer { channel, .. } => format!("sent a {channel} message home"),
+            Output::SpawnEntity { id, options, .. } => {
+                format!("spawned mob {id} ({})", options.kind)
+            }
+            Output::TeleportEntity { id, .. } => format!("teleported mob {id}"),
+            Output::PushEntity { id, .. } => format!("pushed mob {id}"),
+            Output::SetEntityHealth { id, health, .. } => {
+                format!("set mob {id}'s health to {health}")
+            }
+            Output::RemoveEntity { id, .. } => format!("removed mob {id}"),
+            Output::RedstoneOutput { pos, strong, .. } => format!(
+                "set the redstone output of {} {} {}{}",
+                pos[0],
+                pos[1],
+                pos[2],
+                if strong { " (strong)" } else { "" }
+            ),
+            Output::Particle { particle, .. } => {
+                format!("sent {} {} particle(s)", particle.count, particle.name)
+            }
+            Output::Sound { name, .. } => format!("played {name}"),
+            Output::SoundTo { player, name, .. } => format!("played {name} to {player}"),
         });
     }
     let shapes = mods.hud_shapes().count();

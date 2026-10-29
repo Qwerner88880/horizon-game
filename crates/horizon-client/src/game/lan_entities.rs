@@ -71,10 +71,11 @@ fn stand_poses(a: &horizon_client::entities::ArmorStand) -> Vec<(u8, i32, Value)
 }
 
 impl Game<'_> {
-    /// Who rides what (`Entity.getPassengers`): mobs on mobs, and the
-    /// host in its boat or minecart.
+    /// Who rides what (`Entity.getPassengers`): mobs on mobs, the host in
+    /// its boat or minecart, and the server mods' display entities on the
+    /// mobs they were given (`displays.ride`).
     pub(super) fn lan_riding(
-        &self,
+        &mut self,
         host_entity: Option<i32>,
         guests: &[(u32, i32)],
         riding: &mut Riding,
@@ -91,6 +92,18 @@ impl Game<'_> {
         }
         if let (Some(host), Some(vehicle)) = (host_entity, self.riding) {
             riding.add(vehicle as i32, host);
+        }
+        #[cfg(feature = "mods")]
+        for d in &mut self.mods.displays {
+            let Some(v) = d.riding else {
+                continue;
+            };
+            if self.mobs.iter().any(|m| m.id == v && !m.removed) {
+                riding.add(v as i32, d.id);
+            } else {
+                // The mob is gone: the display stands on its own again.
+                d.riding = None;
+            }
         }
     }
 

@@ -181,7 +181,10 @@ impl Riding {
     pub fn passengers(&self, id: i32) -> &[i32] {
         self.passengers.get(&id).map_or(&[], Vec::as_slice)
     }
-    fn set_passengers(&self, vehicle: i32) -> play::Clientbound {
+    /// The vehicle's passengers as a `SetPassengers` packet: the book's
+    /// list, shared with the guests the game adds a display to (capability
+    /// `displays`).
+    pub fn set_passengers(&self, vehicle: i32) -> play::Clientbound {
         play::Clientbound::SetPassengers(SetPassengers {
             vehicle,
             passengers: self.passengers(vehicle).to_vec(),

@@ -816,7 +816,10 @@ impl Game<'_> {
                 | Output::SetMenuItems { .. }
                 | Output::CloseMenu { .. }
                 | Output::ShowDisplay { .. }
-                | Output::HideDisplay { .. }) => {
+                | Output::HideDisplay { .. }
+                | Output::ShowItemDisplay { .. }
+                | Output::MoveDisplay { .. }
+                | Output::RideDisplay { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
                     continue;
                 }

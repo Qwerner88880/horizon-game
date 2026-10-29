@@ -293,7 +293,9 @@ impl Capability {
                 "store energy in its blocks and move energy between any mod's blocks"
             }
             Capability::Menus => "open menus of its own for you, and see what you click in them",
-            Capability::Displays => "show block models and text of its own in the world",
+            Capability::Displays => {
+                "show block models, items and text of its own in the world, moved smoothly or riding its mobs"
+            }
             Capability::Items => "keep items in its blocks and move items between any mod's blocks",
             Capability::MachineRecipes => "read the recipes of its own machines from data files",
             Capability::Multiblocks => {

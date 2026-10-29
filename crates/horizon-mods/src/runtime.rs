@@ -320,6 +320,9 @@ const CLAIMED_ITEMS: usize = 256;
 /// Bytes of a mod's own on one stack (`item-hooks.set-data`): a component
 /// on the stack, saved with it.
 const STACK_DATA: usize = 4096;
+/// Bytes of components an item display's stack may carry
+/// (`displays.show-item`): its stack is a look, not storage.
+const DISPLAY_COMPONENTS: usize = 512;
 /// `set-data` calls one hook call may make: each rewrites the stack's
 /// components, so a loop of them needs its own bound beside fuel.
 const SET_DATA_PER_CALL: u32 = 32;
@@ -604,6 +607,32 @@ pub enum Output {
     HideDisplay {
         mod_id: String,
         name: String,
+    },
+    /// `displays.show-item`: mod `mod_id`'s display `name`, shown or
+    /// changed, as an item's model.
+    ShowItemDisplay {
+        mod_id: String,
+        name: String,
+        dimension: String,
+        pos: [f64; 3],
+        stack: crate::items::Stack,
+        transform: Transform,
+        interpolation: u32,
+    },
+    /// `displays.move`: mod `mod_id`'s display `name`, any shape, walked to
+    /// a position without remaking it.
+    MoveDisplay {
+        mod_id: String,
+        name: String,
+        pos: [f64; 3],
+        interpolation: u32,
+    },
+    /// `displays.ride`: mod `mod_id`'s display `name` made to ride one of
+    /// the mod's mobs (`None`: put down where it stands).
+    RideDisplay {
+        mod_id: String,
+        name: String,
+        entity: Option<u32>,
     },
     /// `network.send-to`: a message of server mod `mod_id` to the player
     /// with this id.
@@ -3326,6 +3355,79 @@ impl displays::Host for State {
             mod_id: self.id.clone(),
             name,
         });
+    }
+    fn show_item(
+        &mut self,
+        name: String,
+        dimension: String,
+        x: f64,
+        y: f64,
+        z: f64,
+        stack: displays::ItemStack,
+        transform: Transform,
+        interpolation: u32,
+    ) -> Result<(), String> {
+        if let Some(view) = self.world.lock().ok().as_ref().and_then(|v| v.as_ref()) {
+            if !view.has_dimension(&dimension) {
+                return Err(format!("no dimension {dimension}"));
+            }
+            if view.max_stack(&stack.item).is_none() {
+                return Err(format!("no item {}", stack.item));
+            }
+        }
+        if stack.count == 0 || stack.count > 99 {
+            return Err(format!("count {}: 1 to 99", stack.count));
+        }
+        if stack.components.len() > DISPLAY_COMPONENTS {
+            return Err("components are up to 512 bytes".into());
+        }
+        if ![x, y, z].iter().all(|v| v.is_finite()) {
+            return Err("a position must be finite".into());
+        }
+        self.out.push(Output::ShowItemDisplay {
+            mod_id: self.id.clone(),
+            name,
+            dimension,
+            pos: [x, y, z],
+            stack: crate::items::Stack {
+                item: stack.item,
+                count: stack.count,
+                components: stack.components,
+            },
+            transform,
+            interpolation: interpolation.min(1200),
+        });
+        Ok(())
+    }
+    fn move_(
+        &mut self,
+        name: String,
+        x: f64,
+        y: f64,
+        z: f64,
+        interpolation: u32,
+    ) -> Result<(), String> {
+        if ![x, y, z].iter().all(|v| v.is_finite()) {
+            return Err("a position must be finite".into());
+        }
+        self.out.push(Output::MoveDisplay {
+            mod_id: self.id.clone(),
+            name,
+            pos: [x, y, z],
+            interpolation: interpolation.min(1200),
+        });
+        Ok(())
+    }
+    fn ride(&mut self, name: String, entity: Option<u32>) -> Result<(), String> {
+        if let Some(id) = entity {
+            self.own_entity(id)?;
+        }
+        self.out.push(Output::RideDisplay {
+            mod_id: self.id.clone(),
+            name,
+            entity,
+        });
+        Ok(())
     }
 }
 /// A mob tag: `[a-z0-9_./-]{1,64}`.
