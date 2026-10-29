@@ -74,9 +74,15 @@ pub fn connect_from(port: Option<u16>, to: SocketAddr, timeout: Duration) -> io:
         {
             match s.connect_timeout(&SockAddr::from(to), timeout) {
                 Ok(()) => return Ok(s.into()),
+                // The port may be unusable: taken, or - on Windows - its
+                // four-tuple with this address still in TIME_WAIT from an
+                // earlier session, whose dropped SYNs show up as a timeout.
+                // Any other failure is the address's own; try without the
+                // port, as the bind failing above does.
                 Err(e)
                     if e.kind() != io::ErrorKind::AddrInUse
-                        && e.kind() != io::ErrorKind::AddrNotAvailable =>
+                        && e.kind() != io::ErrorKind::AddrNotAvailable
+                        && e.kind() != io::ErrorKind::TimedOut =>
                 {
                     return Err(e);
                 }
