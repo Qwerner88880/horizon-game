@@ -777,6 +777,42 @@ interface items {
     extract: func(dimension: string, x: s32, y: s32, z: s32, slot: u32, count: u32, simulate: bool) -> option<stack>;
 }
 
+/// Capability `machine-recipes`, server mods only (manifest `api = "0.3"`,
+/// experimental): the recipes of the mod's own machines. The game loads them
+/// once, before the mod starts, from `data/<id>/recipe/` files of the mod's
+/// id — in its own package and in a content mod's carry of the same id. It
+/// parses each file's `type` and the ingredient syntax of `inputs` and
+/// `results` (tags expanded); the whole file stays the mod's own in `data`,
+/// for the fields only it knows.
+interface machine-recipes {
+    record stack {
+        /// `minecraft:redstone`, `<mod>:<path>`.
+        item: string,
+        count: u32,
+    }
+    record machine-recipe {
+        /// `<id>:<path>`: the file's place under `data/<id>/recipe/`.
+        id: string,
+        /// The file's `type`, as `cells:grinding`.
+        kind: string,
+        /// What goes in, slot by slot: each slot's list holds every stack
+        /// that fits it (a tag's members); an empty list is a free slot.
+        inputs: list<list<stack>>,
+        /// What comes out, as `inputs`.
+        results: list<list<stack>>,
+        /// The file's whole JSON text, for the fields only the mod knows
+        /// (energy, ticks, tiers).
+        data: string,
+    }
+    /// The mod's machine recipes of these `kind`s (at most 16; an empty list:
+    /// every one). They are loaded before `init` and never change while the
+    /// mod runs — call once in `init` and keep, not each tick.
+    all: func(kinds: list<string>) -> list<machine-recipe>;
+    /// Those of `all` a slot of whose `inputs` takes `stack`'s item: the
+    /// recipes a machine holding `stack` can make now.
+    by-input: func(stack: stack, kinds: list<string>) -> list<machine-recipe>;
+}
+
 /// Capability `menus`, server mods only (manifest `api = "0.3"`,
 /// experimental): chest menus the mod opens for a player, with items of its
 /// own in the slots. Players see and click them but can't take the items;
@@ -1048,6 +1084,7 @@ world horizon-block-mod {
     import menus;
     import displays;
     import items;
+    import machine-recipes;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -1079,6 +1116,11 @@ world menu-host {
     import players;
     import menus;
     export menu-events;
+}
+
+/// The game's side of capability `machine-recipes` (imports only).
+world machine-recipes-host {
+    import machine-recipes;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

@@ -8,7 +8,8 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Corner, GameMode, Mods, Output, Panel, Player, ServerPlayer, Snapshot, Status,
+    BlockPos, Clock, Corner, GameMode, Mods, Output, Panel, Player, Runs, ServerPlayer, Snapshot,
+    Status,
 };
 use serde::Deserialize;
 use std::{
@@ -133,7 +134,14 @@ impl TestGame {
     }
 
     fn start(&mut self) -> Result<(), String> {
-        self.mods = Mods::load(std::slice::from_ref(&self.hmod), |_| true, |_| false);
+        let recipes = machine_recipes_of(&self.hmod);
+        self.mods = Mods::load_for(
+            Runs::Both,
+            std::slice::from_ref(&self.hmod),
+            |_| true,
+            |_| false,
+            recipes,
+        );
         match &self.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
             _ if !self.mods.is_running() => Err("the mod has no code to run".into()),
@@ -325,6 +333,26 @@ impl Drop for TestGame {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The machine recipes in the mod at `hmod` (capability `machine-recipes`),
+/// as the game builds them for its server mods: the package's own
+/// `data/<id>/recipe/` files, read before the mod starts. A test's
+/// ingredients are literal, so tags stay unexpanded.
+fn machine_recipes_of(
+    hmod: &Path,
+) -> Option<std::sync::Arc<crate::machine_recipes::MachineRecipes>> {
+    let package = crate::Package::read(hmod).ok()?;
+    let m = &package.manifest;
+    if m.side != crate::Side::Server || !m.capabilities.contains(&crate::Capability::MachineRecipes)
+    {
+        return None;
+    }
+    let files = crate::machine_recipes::files_in_package(hmod, &m.id);
+    Some(std::sync::Arc::new(crate::machine_recipes::build(
+        &files,
+        &|_| Vec::new(),
+    )))
 }
 
 /// A `.hmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).

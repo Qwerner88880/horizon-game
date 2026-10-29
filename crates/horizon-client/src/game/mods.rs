@@ -325,7 +325,16 @@ impl Game<'_> {
             .collect();
         let enabled = &self.settings.mods.enabled;
         let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
-        let mods = Mods::load_for(self.mod_runs(), &paths, on, vanilla_command);
+        // The server mods' machine recipes, before any of them starts: each
+        // mod's `init` already reads its table (docs/mods.md).
+        let runs = self.mod_runs();
+        let recipes = super::machine_recipes::machine_recipes(
+            &paths,
+            &self.options.resources,
+            self.res.rest.get().map(|r| &r.items),
+            runs,
+        );
+        let mods = Mods::load_for(runs, &paths, on, vanilla_command, recipes);
         self.mods.mods = mods;
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));

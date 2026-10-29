@@ -1,0 +1,5 @@
+{
+    "type": "cells:grinding",
+    "inputs": ["minecraft:andesite"],
+    "results": [{"id": "minecraft:redstone", "count": 1}]
+}

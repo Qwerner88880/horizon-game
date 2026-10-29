@@ -14,6 +14,7 @@ pub mod energy;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod items;
+pub mod machine_recipes;
 pub mod manifest;
 pub mod modpack;
 #[cfg(feature = "runtime")]

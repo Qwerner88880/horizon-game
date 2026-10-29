@@ -10,10 +10,14 @@
 //! core spins (capability `displays`). Each cell has two slots (capability
 //! `items`), shown in its menu: redstone put in the left one turns into
 //! energy, and the menu's Drain button turns energy into redstone in the
-//! right one, which players can only take from.
+//! right one, which players can only take from. A cobblestone or andesite
+//! in the left slot is ground into redstone by the mod's own machine
+//! recipes (capability `machine-recipes`, `data/cells/recipe/`), which the
+//! game loads before the mod starts; `/cellrecipes` counts them.
 use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, MenuItem, MenuSlot, Player, Registration, ServerMod, Shape,
-    SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items, menus, players,
+    SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items,
+    machine_recipes, menus, players,
 };
 use std::collections::BTreeMap;
 
@@ -29,13 +33,22 @@ const FLOW: u64 = 100;
 #[derive(Default)]
 struct Cells {
     open: BTreeMap<String, (String, i32, i32, i32)>,
+    /// The mod's grinding recipes, read once in `init` (capability
+    /// `machine-recipes`): they never change while the mod runs.
+    recipes: Vec<machine_recipes::MachineRecipe>,
 }
+
+/// The machine recipe kind this mod's files carry (`data/cells/recipe/`).
+const KIND: &str = "cells:grinding";
 
 /// The menu's buttons, by slot (3 rows of 9).
 const DRAIN: u32 = 11;
 const CHARGE_SLOT: u32 = 13;
 const FILL: u32 = 15;
 const CLOSE: u32 = 22;
+/// Puts a cobblestone in the input slot, to be ground (a demo button, like
+/// Fill making energy).
+const LOAD: u32 = 24;
 /// Energy a button moves, and a redstone dust is worth.
 const STEP: u64 = 1000;
 /// The cell's slots: redstone in, redstone out; and where its menu shows them.
@@ -44,12 +57,25 @@ const OUTPUT: u32 = 1;
 const INPUT_SLOT: u32 = 10;
 const OUTPUT_SLOT: u32 = 16;
 const REDSTONE: &str = "minecraft:redstone";
+/// What the Load button puts in the input slot.
+const COBBLE: &str = "minecraft:cobblestone";
 
 /// How many items slot `slot` of the cell at a position holds.
 fn count(d: &str, x: i32, y: i32, z: i32, slot: u32) -> u32 {
     items::get(d, x, y, z)
         .and_then(|s| s.get(slot as usize).cloned().flatten())
         .map_or(0, |s| s.count)
+}
+
+/// The stack a machine recipe makes first: its first result slot's first
+/// option, as the cell's inventory holds it.
+fn first_result(recipe: &machine_recipes::MachineRecipe) -> Option<Stack> {
+    let made = recipe.results.first()?.first()?;
+    Some(Stack {
+        item: made.item.clone(),
+        count: made.count,
+        components: String::new(),
+    })
 }
 /// Ticks between two refreshes of an open menu, and of the displays.
 const REFRESH: u64 = 10;
@@ -98,6 +124,10 @@ fn view(stored: u64) -> Vec<MenuItem> {
             .named(&format!("{stored} / {CAPACITY} FE"), &[&bar]),
         MenuItem::new(FILL, "minecraft:glowstone_dust", 1)
             .named(&format!("Fill {STEP} FE"), &["Puts energy into the cell"]),
+        MenuItem::new(LOAD, COBBLE, 1).named(
+            "Load cobble",
+            &["Puts a cobblestone in the input slot, to be ground"],
+        ),
         MenuItem::new(CLOSE, "minecraft:barrier", 1).named("Close", &[]),
     ]
 }
@@ -153,12 +183,19 @@ fn step(cells: &mut BTreeMap<(i32, i32, i32), u64>) {
 
 impl ServerMod for Cells {
     fn init() -> Result<(Self, Registration), String> {
+        // The game loads the mod's machine recipes before `init`
+        // (docs/mods.md): read them once here and keep them, not each tick.
+        let recipes = machine_recipes::all(&[KIND.to_string()]);
         Ok((
-            Cells::default(),
+            Cells {
+                recipes,
+                ..Cells::default()
+            },
             Registration::new()
                 .command_with("cell", [Argument::block_pos("pos").optional()])
                 .command_with("cellgui", [Argument::block_pos("pos").optional()])
-                .command_with("cellitems", [Argument::block_pos("pos").optional()]),
+                .command_with("cellitems", [Argument::block_pos("pos").optional()])
+                .command_with("cellrecipes", []),
         ))
     }
 
@@ -188,6 +225,27 @@ impl ServerMod for Cells {
             }
             if items::get(d, x, y, z).is_none() {
                 let _ = items::set_slots(d, x, y, z, 2);
+            }
+            // A machine recipe (capability `machine-recipes`) whose input
+            // the cell holds: 1 item in, its first result out. The whole
+            // result must fit, or nothing grinds. This takes the item before
+            // the energy rule below can mistake it for redstone.
+            if count(d, x, y, z, INPUT) > 0
+                && let Some(held) = items::get(d, x, y, z)
+                    .and_then(|slots| slots.get(INPUT as usize).cloned().flatten())
+                && let Some(out) = machine_recipes::by_input(
+                    &machine_recipes::Stack {
+                        item: held.item,
+                        count: 1,
+                    },
+                    &[KIND.to_string()],
+                )
+                .first()
+                .and_then(first_result)
+                && items::insert(d, x, y, z, &out, true) == out.count
+            {
+                let _ = items::extract(d, x, y, z, INPUT, 1, false);
+                let _ = items::insert(d, x, y, z, &out, false);
             }
             // A redstone dust in the input slot: STEP more energy, if it fits.
             if count(d, x, y, z, INPUT) > 0 && stored(d, x, y, z) + STEP <= CAPACITY {
@@ -272,6 +330,9 @@ impl ServerMod for Cells {
         name: &str,
         args: &Args,
     ) -> Result<Option<String>, String> {
+        if name == "cellrecipes" {
+            return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
+        }
         let (x, y, z) = target(player, args);
         let d = &player.dimension;
         block_entities::get(d, x, y, z).ok_or("No cell there")?;
@@ -309,6 +370,17 @@ impl ServerMod for Cells {
                 now - STEP
             }
             FILL => (now + STEP).min(CAPACITY),
+            LOAD => {
+                // A demo button, like Fill making energy: a cobblestone in
+                // the input slot, ground on the next tick.
+                let cobble = Stack {
+                    item: COBBLE.into(),
+                    count: 1,
+                    components: String::new(),
+                };
+                let _ = items::set(&d, x, y, z, INPUT, Some(&cobble));
+                now
+            }
             CLOSE => {
                 self.open.remove(&player.id);
                 menus::close(&player.id);
@@ -388,6 +460,55 @@ mod tests {
         );
         assert!(charge.components.contains("[||||......] 42%"));
         assert!(items.iter().all(|i| i.slot < 27));
+    }
+
+    /// The recipe files as `machine-recipes` loads them: cobblestone makes
+    /// two redstone, andesite one, so the machine's choice by its input is
+    /// told apart by the count.
+    fn grinding(input: &str, count: u32) -> machine_recipes::MachineRecipe {
+        machine_recipes::MachineRecipe {
+            id: format!("cells:grind/{input}"),
+            kind: KIND.into(),
+            inputs: vec![vec![machine_recipes::Stack {
+                item: format!("minecraft:{input}"),
+                count: 1,
+            }]],
+            results: vec![vec![machine_recipes::Stack {
+                item: REDSTONE.into(),
+                count,
+            }]],
+            data: String::new(),
+        }
+    }
+
+    #[test]
+    fn grinding_makes_the_matching_recipes_result() {
+        let recipes = [grinding("cobblestone", 2), grinding("andesite", 1)];
+        // A machine holding an item makes the result of the recipe whose
+        // input takes it — cobblestone two redstone, andesite one.
+        let takes = |input: &str| {
+            recipes
+                .iter()
+                .filter(|r| r.inputs.iter().flatten().any(|s| s.item == input))
+                .map(first_result)
+                .collect::<Vec<_>>()
+        };
+        let made = |input: &str| {
+            takes(input)
+                .first()
+                .and_then(|s| s.as_ref().map(|s| (s.item.clone(), s.count)))
+                .expect("a result")
+        };
+        assert_eq!(made("minecraft:cobblestone"), (REDSTONE.to_string(), 2));
+        assert_eq!(made("minecraft:andesite"), (REDSTONE.to_string(), 1));
+        // An item no recipe takes makes nothing; neither does a recipe with
+        // no results.
+        assert!(takes("minecraft:stone").is_empty());
+        let bare = machine_recipes::MachineRecipe {
+            results: Vec::new(),
+            ..grinding("andesite", 1)
+        };
+        assert!(first_result(&bare).is_none());
     }
 
     #[test]

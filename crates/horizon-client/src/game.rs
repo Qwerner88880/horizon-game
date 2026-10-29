@@ -102,6 +102,8 @@ mod llamas;
 mod locator_bar;
 mod loom;
 mod mace;
+#[cfg(feature = "mods")]
+mod machine_recipes;
 mod machines;
 mod maps;
 mod minecarts;

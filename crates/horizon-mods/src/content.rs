@@ -8,7 +8,7 @@
 //! tags (`c`, which NeoForge and Fabric mods share). Paths are plain, files
 //! and totals are capped, vanilla ids cannot be redefined, and no two mods
 //! share a namespace ([`clash`]).
-use crate::manifest::{Capability, MANIFEST, Manifest};
+use crate::manifest::{Capability, MANIFEST, Manifest, Side};
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
@@ -265,9 +265,20 @@ impl Content {
     fn check(&mut self, manifest: &Manifest) -> Result<(), String> {
         let id = manifest.id.as_str();
         if !self.files.is_empty() && !manifest.capabilities.contains(&Capability::Registries) {
-            return Err(format!(
-                "has assets/ or data/ but not capability registries in {MANIFEST}"
-            ));
+            // The one exception (docs/mods.md, "Machine recipes"): a server
+            // mod with capability `machine-recipes` carries its machines'
+            // recipes, and nothing else besides them.
+            let recipes = manifest.side == Side::Server
+                && manifest.capabilities.contains(&Capability::MachineRecipes)
+                && self
+                    .files
+                    .iter()
+                    .all(|f| f.starts_with(&format!("data/{id}/recipe/")) && f.ends_with(".json"));
+            if !recipes {
+                return Err(format!(
+                    "has assets/ or data/ but not capability registries in {MANIFEST}"
+                ));
+            }
         }
         let mut blocks = Vec::new();
         let mut items = Vec::new();
@@ -482,6 +493,49 @@ capabilities = ["registries"]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
         assert_eq!(content.items[0].rarity, Some(Rarity::Uncommon));
+    }
+
+    #[test]
+    fn a_server_mod_carries_only_its_machine_recipes() {
+        let manifest = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+             capabilities = [\"machine-recipes\"]\nexperimental = [\"machine-recipes\"]\n";
+        let read = |files: &[(&str, &[u8])]| {
+            let dir = scratch("machine-recipes");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(manifest, Some(b"\0asm"), files).unwrap(),
+            )
+            .unwrap();
+            let out = Package::read(&path).and_then(|p| Content::read(&path, &p.manifest));
+            std::fs::remove_dir_all(&dir).unwrap();
+            out
+        };
+        let recipes: &[(&str, &[u8])] = &[
+            ("data/m/recipe/grind/a.json", b"{}"),
+            ("data/m/recipe/grind/deep/b.json", b"{}"),
+        ];
+        let content = read(recipes).unwrap();
+        assert_eq!(
+            content.files,
+            [
+                "data/m/recipe/grind/a.json",
+                "data/m/recipe/grind/deep/b.json"
+            ]
+        );
+        // Anything else under assets/ or data/ is still refused, as is any
+        // recipe of another namespace.
+        for extra in [
+            "assets/m/textures/a.png",
+            "data/m/horizon/block/a.json",
+            "data/m/loot/a.json",
+            "data/other/recipe/a.json",
+            "data/m/recipe/readme.txt",
+        ] {
+            let files: Vec<(&str, &[u8])> = vec![("data/m/recipe/a.json", b"{}"), (extra, b"x")];
+            let e = read(&files).unwrap_err();
+            assert!(e.contains("not capability registries"), "{extra}: {e}");
+        }
     }
 
     #[test]

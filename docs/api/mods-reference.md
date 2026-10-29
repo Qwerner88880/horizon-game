@@ -24,6 +24,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `menus` | [`menus`](#menus) | open menus of its own for you, and see what you click in them |
 | `displays` | [`displays`](#displays) | show block models and text of its own in the world |
 | `items` | [`items`](#items) | keep items in its blocks and move items between any mod's blocks |
+| `machine-recipes` | [`machine-recipes`](#machine-recipes) | read the recipes of its own machines from data files |
 
 ## World `horizon-mod`
 
@@ -43,7 +44,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `server-events`
 
 ## World `block-entity-host`
@@ -73,6 +74,13 @@ The game's side of capability `menus`: a world of its own, so server mods built 
 
 - Imports (what the game offers): `players`, `menus`
 - Exports (what the mod provides): `menu-events`
+
+## World `machine-recipes-host`
+
+The game's side of capability `machine-recipes` (imports only).
+
+- Imports (what the game offers): `machine-recipes`
+- Exports (what the mod provides): 
 
 ## World `horizon-ui-mod`
 
@@ -783,6 +791,34 @@ Capability `items`, server mods only (manifest `api = "0.3"`, experimental): inv
 | `set` | `func(dimension: string, x: s32, y: s32, z: s32, slot: u32, stack: option<stack>) -> result<_, string>` | Replaces slot `slot` of the mod's own inventory (none empties it): an error for an unknown item or a count past its stack size. |
 | `insert` | `func(dimension: string, x: s32, y: s32, z: s32, stack: stack, simulate: bool) -> u32` | Puts as much of `stack` as fits into the inventory at a position, on equal stacks first: how many went in (0 for an unknown item). `simulate`: only says. |
 | `extract` | `func(dimension: string, x: s32, y: s32, z: s32, slot: u32, count: u32, simulate: bool) -> option<stack>` | Takes up to `count` items from slot `slot` of the inventory at a position: what came out. |
+
+## `machine-recipes`
+
+Access: capability `machine-recipes`.
+
+Capability `machine-recipes`, server mods only (manifest `api = "0.3"`, experimental): the recipes of the mod's own machines. The game loads them once, before the mod starts, from `data/<id>/recipe/` files of the mod's id — in its own package and in a content mod's carry of the same id. It parses each file's `type` and the ingredient syntax of `inputs` and `results` (tags expanded); the whole file stays the mod's own in `data`, for the fields only it knows.
+
+### record `stack`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` | `minecraft:redstone`, `<mod>:<path>`. |
+| `count` | `u32` |  |
+
+### record `machine-recipe`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | `<id>:<path>`: the file's place under `data/<id>/recipe/`. |
+| `kind` | `string` | The file's `type`, as `cells:grinding`. |
+| `inputs` | `list<list<stack>>` | What goes in, slot by slot: each slot's list holds every stack that fits it (a tag's members); an empty list is a free slot. |
+| `results` | `list<list<stack>>` | What comes out, as `inputs`. |
+| `data` | `string` | The file's whole JSON text, for the fields only the mod knows (energy, ticks, tiers). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `all` | `func(kinds: list<string>) -> list<machine-recipe>` | The mod's machine recipes of these `kind`s (at most 16; an empty list: every one). They are loaded before `init` and never change while the mod runs — call once in `init` and keep, not each tick. |
+| `by-input` | `func(stack: stack, kinds: list<string>) -> list<machine-recipe>` | Those of `all` a slot of whose `inputs` takes `stack`'s item: the recipes a machine holding `stack` can make now. |
 
 ## `menus`
 

@@ -60,13 +60,34 @@ expect.error = "No cell there"
 command = "cell 5 63 5"
 expect.error = "No cell there"
 
+# The mod's own machine recipes (data/cells/recipe), loaded before init:
+# /cellrecipes counts them, and the cell grinds what its input slot holds —
+# cobblestone into two redstone on top of the two Drain made (andesite
+# would make one), the whole result only when it fits.
+[[step]]
+command = "cellrecipes"
+expect.feedback = "2 grinding recipes"
+
+[[step]]
+command = "cellgui"
+
+[[step]]
+click = { menu = "cell", slot = 24 }
+command = "cellitems"
+expect.feedback = "Cell at 0 63 0: 1 in, 0 out"
+
+[[step]]
+ticks = 2
+command = "cellitems"
+expect.feedback = "Cell at 0 63 0: 0 in, 4 out"
+
 # The block a cell stood on is checked at the next tick.
 [[step]]
 break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
 
 [[step]]
 ticks = 1
-expect.broadcast = ["The cell at 0 63 0 is gone with 100 FE"]
+expect.broadcast = ["The cell at 0 63 0 is gone with 110 FE"]
 
 [[step]]
 command = "cell"

@@ -165,6 +165,16 @@ pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
 use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
+/// Capability `machine-recipes`' imports (docs/mods.md): the recipes of the
+/// mods' own machines, a table built before they start.
+mod machine_recipe_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "machine-recipes-host",
+        additional_derives: [PartialEq],
+    });
+}
+use machine_recipe_bindings::horizon::mods::machine_recipes;
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -375,6 +385,10 @@ pub trait WorldView: std::any::Any + Send {
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
 /// Capability `block-entities`' store, lent like the world.
 type EntitySlot = Arc<Mutex<Option<crate::BlockEntities>>>;
+/// Capability `machine-recipes`' table: static content, not lent world
+/// state — filled once by [`Mods::load_for`] before any mod starts, and
+/// every mod's `init` already reads it.
+type RecipeSlot = Arc<Mutex<Option<Arc<crate::machine_recipes::MachineRecipes>>>>;
 
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
@@ -428,6 +442,8 @@ struct Running {
     raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
+    /// It imports capability `machine-recipes`.
+    reads_machine_recipes: bool,
     /// Capability `block-entities`: the export and the blocks it claims.
     blocks: Option<(BlockEntityHost, Vec<String>)>,
     /// Capability `menus`: the `menu-events` export.
@@ -544,6 +560,7 @@ struct State {
     limits: StoreLimits,
     world: WorldSlot,
     entities: EntitySlot,
+    machine_recipes: RecipeSlot,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -556,6 +573,7 @@ pub struct Mods {
     out: Vec<Output>,
     world: WorldSlot,
     entities: EntitySlot,
+    machine_recipes: RecipeSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -823,17 +841,26 @@ impl Mods {
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
-        Mods::load_for(Runs::Both, paths, enabled, reserved)
+        Mods::load_for(Runs::Both, paths, enabled, reserved, None)
     }
     /// [`Mods::load`], starting only the mods `runs` says this game runs; the
-    /// others that are on are [`Status::Elsewhere`].
+    /// others that are on are [`Status::Elsewhere`]. `recipes` is capability
+    /// `machine-recipes`' table, built by the game before this call so that
+    /// every mod's `init` already reads it (`None`: the mods' machines have
+    /// no recipes, and `machine-recipes.all` answers empty).
     pub fn load_for(
         runs: Runs,
         paths: &[PathBuf],
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
+        recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
     ) -> Mods {
         let mut mods = Mods::default();
+        if let Some(recipes) = recipes
+            && let Ok(mut slot) = mods.machine_recipes.lock()
+        {
+            *slot = Some(recipes);
+        }
         for path in paths {
             let modified = modified(path);
             let mut entry = Entry {
@@ -898,6 +925,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             displays::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            machine_recipes::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -938,6 +967,7 @@ impl Mods {
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
         let entities = self.entities.clone();
+        let machine_recipes = self.machine_recipes.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -980,6 +1010,7 @@ impl Mods {
                 .build(),
             world,
             entities,
+            machine_recipes,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1074,6 +1105,7 @@ impl Mods {
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            reads_machine_recipes: functions.iter().any(|f| f.starts_with("machine-recipes.")),
             blocks,
             menus,
             uses,
@@ -1410,6 +1442,18 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_recipes))
+    }
+    /// The machine-recipes table this run was given (capability
+    /// `machine-recipes`), for tests; the game passes it to
+    /// [`Mods::load_for`] and it never changes while the mods run.
+    pub fn machine_recipes(&self) -> Option<Arc<crate::machine_recipes::MachineRecipes>> {
+        self.machine_recipes.lock().ok().and_then(|s| s.clone())
+    }
+    /// Some running mod reads capability `machine-recipes`.
+    pub fn wants_machine_recipes(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_machine_recipes))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -2374,6 +2418,63 @@ impl energy::Host for State {
             .unwrap_or(0)
     }
 }
+/// `machine-recipes` kinds one `all` or `by-input` call may ask for; the
+/// rest are ignored (a kind not asked for simply finds nothing).
+const MACHINE_RECIPE_KINDS: usize = 16;
+
+impl machine_recipes::Host for State {
+    fn all(&mut self, mut kinds: Vec<String>) -> Vec<machine_recipes::MachineRecipe> {
+        kinds.truncate(MACHINE_RECIPE_KINDS);
+        self.recipe_table()
+            .map_or_else(Vec::new, |t| t.of_mod(&self.id, &kinds))
+            .into_iter()
+            .map(wit_recipe)
+            .collect()
+    }
+    fn by_input(
+        &mut self,
+        stack: machine_recipes::Stack,
+        mut kinds: Vec<String>,
+    ) -> Vec<machine_recipes::MachineRecipe> {
+        kinds.truncate(MACHINE_RECIPE_KINDS);
+        self.recipe_table()
+            .map_or_else(Vec::new, |t| t.by_input(&self.id, &stack.item, &kinds))
+            .into_iter()
+            .map(wit_recipe)
+            .collect()
+    }
+}
+impl State {
+    /// The machine-recipes table this run loaded, if the game gave it one.
+    fn recipe_table(&self) -> Option<Arc<crate::machine_recipes::MachineRecipes>> {
+        self.machine_recipes.lock().ok().and_then(|s| s.clone())
+    }
+}
+
+/// A stored machine recipe as the component reads it.
+fn wit_recipe(r: crate::machine_recipes::MachineRecipe) -> machine_recipes::MachineRecipe {
+    let slots = |slots: Vec<Vec<crate::machine_recipes::Stack>>| {
+        slots
+            .into_iter()
+            .map(|s| {
+                s.into_iter()
+                    .map(|s| machine_recipes::Stack {
+                        item: s.item,
+                        count: s.count,
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    machine_recipes::MachineRecipe {
+        id: r.id,
+        kind: r.kind,
+        inputs: slots(r.inputs),
+        results: slots(r.results),
+        data: r.data,
+    }
+}
+
 impl players::Host for State {
     fn online(&mut self) -> Vec<ServerPlayer> {
         self.snapshot.players.clone()

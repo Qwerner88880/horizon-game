@@ -115,9 +115,12 @@ pub enum Capability {
     Displays,
     /// Inventories on block entities, shared by every mod (server mods).
     Items,
+    /// The recipes of the mod's own machines, from its `data/<id>/recipe/`
+    /// files (server mods).
+    MachineRecipes,
 }
 impl Capability {
-    pub const ALL: [Capability; 17] = [
+    pub const ALL: [Capability; 18] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -135,6 +138,7 @@ impl Capability {
         Capability::Menus,
         Capability::Displays,
         Capability::Items,
+        Capability::MachineRecipes,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -148,6 +152,7 @@ impl Capability {
                 | Capability::Menus
                 | Capability::Displays
                 | Capability::Items
+                | Capability::MachineRecipes
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -170,6 +175,7 @@ impl Capability {
             Capability::Menus => "menus",
             Capability::Displays => "displays",
             Capability::Items => "items",
+            Capability::MachineRecipes => "machine-recipes",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -186,6 +192,7 @@ impl Capability {
                 | Capability::Menus
                 | Capability::Displays
                 | Capability::Items
+                | Capability::MachineRecipes
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -216,6 +223,7 @@ impl Capability {
             Capability::Menus => "open menus of its own for you, and see what you click in them",
             Capability::Displays => "show block models and text of its own in the world",
             Capability::Items => "keep items in its blocks and move items between any mod's blocks",
+            Capability::MachineRecipes => "read the recipes of its own machines from data files",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -262,6 +270,7 @@ impl fmt::Display for Capability {
             Capability::Menus => "menus",
             Capability::Displays => "displays",
             Capability::Items => "items",
+            Capability::MachineRecipes => "machine-recipes",
         };
         f.write_str(name)
     }

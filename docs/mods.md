@@ -687,6 +687,39 @@ and a spinning redstone core.
 
 **Not yet.** Item displays; Horizon's client draws block and text displays.
 
+#### Machine recipes (capability `machine-recipes`, experimental)
+
+The recipes of a server mod's own machines, in its `data/<id>/recipe/` files:
+the game loads them once, before the mod starts, so its `init` already reads
+them. Each file is one recipe — its `type` (as `cells:grinding`), its
+`inputs` and `results` in vanilla's ingredient syntax (`"minecraft:redstone"`,
+`"#c:ores"` (a tag, expanded at load), `["a", "#b"]` (any of them),
+`{"item": "..", "count": n}`, `{"tag": ".."}`; `input`/`ingredient` and
+`result`/`output` name a single slot) — and whatever else the mod's own
+fields are: the whole file reaches the mod as `data`, to parse as it knows
+(energy, ticks, tiers). The files come from the mod's own package (`.hmod` or
+folder) and from a content mod's carry of the same id (`horizon-forge
+convert` lays one down); the package's file wins. At most 512 recipes a mod
+and 16 KiB a file; a mod with this capability may carry only these files,
+under its own id.
+
+`machine_recipes::all(kinds)` lists the mod's recipes of those kinds (an
+empty list: every one; at most 16 kinds) — call it once in `init` and keep
+the answer, not each tick. `machine_recipes::by_input(stack, kinds)` narrows
+it to the recipes a slot of whose `inputs` takes the stack's item (a free
+slot takes anything): a machine's tick asks what it can make now, with at
+most 64 back. Neither changes while the mod runs, and neither errors — an
+empty list is the honest answer. A `cells` lodestone grinds cobblestone and
+andesite in its input slot into redstone this way (`data/cells/recipe/` in
+the example), and its `/cellrecipes` counts the recipes.
+
+**Not yet.** Changed recipe files are read at the next start of the mods (a
+dev rebuild of the code alone keeps the table as it was); tags are expanded
+once, at load, and a tag naming no item skips its recipe; the mod's id is the
+only namespace (a server mod's manifest may list no other); recipes are not
+per-world and never saved with one, being content; `by-input` matches items,
+not components.
+
 New blocks come from a content mod (API 0.2, capability `registries`) that
 a server mod claims: `horizon-forge convert` carries a Java mod's blocks,
 models and textures over as one.

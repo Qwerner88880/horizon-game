@@ -81,7 +81,36 @@ fn mods_dir() -> &'static Path {
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
-            let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
+            let component = componentize(&core).unwrap();
+            // Cells carries its machine recipes in its package (capability
+            // `machine-recipes`): the same files as the example's folder.
+            let hmod = if name == "cells" {
+                let grind = root.join(format!(
+                    "crates/horizon-mod-sdk/examples/{name}/data/{name}/recipe/grind"
+                ));
+                let files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&grind)
+                    .unwrap()
+                    .flatten()
+                    .filter_map(|e| {
+                        let path = e.path();
+                        let file = path.file_name()?.to_str()?.to_owned();
+                        path.extension().is_some_and(|x| x == "json").then(|| {
+                            (
+                                format!("data/{name}/recipe/grind/{file}"),
+                                std::fs::read(&path).unwrap(),
+                            )
+                        })
+                    })
+                    .collect();
+                assert_eq!(files.len(), 2, "the cells example carries two recipes");
+                let files: Vec<(&str, &[u8])> = files
+                    .iter()
+                    .map(|(n, b)| (n.as_str(), b.as_slice()))
+                    .collect();
+                Package::write_files(&manifest, Some(&component), &files).unwrap()
+            } else {
+                Package::write(&manifest, &component).unwrap()
+            };
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
         }
         dir
@@ -1016,11 +1045,11 @@ fn a_server_mod_runs_only_where_the_world_does() {
     let path = dir.join("welcome.hmod");
     std::fs::copy(mods_dir().join("welcome.hmod"), &path).unwrap();
     let paths = std::slice::from_ref(&path);
-    let window = Mods::load_for(Runs::Client, paths, |_| true, |_| false);
+    let window = Mods::load_for(Runs::Client, paths, |_| true, |_| false, None);
     assert_eq!(window.entries()[0].status, Status::Elsewhere);
     assert!(!window.is_running());
 
-    let mut mods = Mods::load_for(Runs::Server, paths, |_| true, |c| c == "give");
+    let mut mods = Mods::load_for(Runs::Server, paths, |_| true, |c| c == "give", None);
     assert!(mods.runs_server());
     let commands: Vec<_> = mods.server_commands().map(|c| c.name.as_str()).collect();
     assert_eq!(commands, ["online", "mined"]);
