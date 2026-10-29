@@ -142,6 +142,10 @@ impl SessionLock {
         use std::io::Write;
         fs::create_dir_all(world)?;
         let mut file = fs::OpenOptions::new()
+            // Read-write, as vanilla's RandomAccessFile("rw"): the lock's
+            // own descriptor reads the file back (Windows's mandatory locks
+            // keep any other handle from it).
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
@@ -4439,10 +4443,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("horizon-lock-{}", std::process::id()));
         let first = super::SessionLock::acquire(&dir).expect("first lock");
         assert!(super::SessionLock::acquire(&dir).is_err());
-        assert_eq!(
-            std::fs::read(dir.join("session.lock")).unwrap(),
-            [0x26, 0x03]
-        );
+        // Windows's file locks are mandatory: no other handle may read a
+        // locked file, so the lock's own descriptor reads it there.
+        use std::io::{Read, Seek, SeekFrom};
+        let mut bytes = [0; 2];
+        let mut file = &first.0;
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [0x26, 0x03]);
         drop(first);
         assert!(super::SessionLock::acquire(&dir).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
