@@ -71,10 +71,12 @@ expect.feedback = "2 grinding recipes"
 [[step]]
 command = "cellgui"
 
+# Load cobble puts one cobblestone in the input slot; the two Dust buttons
+# earlier left two redstone in the output one.
 [[step]]
 click = { menu = "cell", slot = 24 }
 command = "cellitems"
-expect.feedback = "Cell at 0 63 0: 1 in, 0 out"
+expect.feedback = "Cell at 0 63 0: 1 in, 2 out"
 
 [[step]]
 ticks = 2
