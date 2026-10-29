@@ -1,0 +1,20 @@
+# The mod's own block (capability registries, data/cells/horizon/block/cell.json):
+# a placed cells:cell becomes an energy cell like a lodestone — it charges, /cell
+# reads it, and breaking it says what was lost. The manifest and the content
+# load with the mod: without `registries` the mod would not start at all.
+
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "cells:cell" }
+
+[[step]]
+ticks = 20
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "cells:cell" }
+
+[[step]]
+ticks = 1
+expect.broadcast = ["The cell at 0 63 0 is gone with 100 FE"]

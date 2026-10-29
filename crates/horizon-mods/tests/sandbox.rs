@@ -85,15 +85,16 @@ fn mods_dir() -> &'static Path {
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
             let component = componentize(&core).unwrap();
-            // Cells carries its machine recipes and its structures in its
-            // package (capabilities `machine-recipes` and `multiblocks`):
-            // the same files as the example's folder.
+            // Cells carries its machine recipes, its structures and its own
+            // block in its package (capabilities `machine-recipes`,
+            // `multiblocks` and `registries`): the same files as the
+            // example's folder.
             let hmod = if name == "cells" {
                 let data = root.join(format!(
                     "crates/horizon-mod-sdk/examples/{name}/data/{name}"
                 ));
                 let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-                for folder in ["recipe/grind", "multiblock"] {
+                for folder in ["recipe/grind", "multiblock", "horizon/block"] {
                     for entry in std::fs::read_dir(data.join(folder)).unwrap().flatten() {
                         let path = entry.path();
                         let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
@@ -109,8 +110,8 @@ fn mods_dir() -> &'static Path {
                 }
                 assert_eq!(
                     files.len(),
-                    3,
-                    "the cells example carries two recipes and a structure"
+                    4,
+                    "the cells example carries two recipes, a structure and a block"
                 );
                 let files: Vec<(&str, &[u8])> = files
                     .iter()
@@ -947,7 +948,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 16);
+    assert_eq!(ran, 17);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):

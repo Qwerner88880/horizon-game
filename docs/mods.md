@@ -1095,7 +1095,9 @@ their anchor cannot be watched; changed files are read at the next start
 of the mods, as machine recipes are.
 
 New blocks come from a content mod (API 0.2, capability `registries`) that
-a server mod claims: `horizon-forge convert` carries a Java mod's blocks,
+a server mod claims, or from the server mod itself (capability `registries`
+on API 0.3, [below](#a-server-mods-own-content-capability-registries)):
+`horizon-forge convert` carries a Java mod's blocks,
 models and textures over as one.
 
 #### World data (capability `saved-data`, experimental)
@@ -1314,6 +1316,48 @@ another mob's attack); mobs of other dimensions than the one the server
 simulates; the mod's own AI goals (it moves a mob with `teleport` and `push`
 each tick); mobs that are not vanilla kinds (a model of its own: use display
 models).
+
+#### A server mod's own content (capability `registries`)
+
+A server mod may carry the same `assets/` and `data/` a content mod does,
+in the same `.hmod` as its code: `api = "0.3"`, `side = "server"`,
+`capabilities = [..., "registries"]` (stable: no `experimental` entry).
+Everything the content fence allows a 0.2 mod
+([Content mods (API 0.2)](#content-mods-api-02)) is allowed it too, under
+the same caps: blocks and items declared in `data/<id>/horizon/`, files in
+its own namespaces (its id and those its manifest `namespaces` list — the
+common rules, not a server-mod restriction), and additions to vanilla and
+convention tags. `cargo horizon-mod build` packs code and content into the
+one file; a mod whose content is refused stays off, with the reason on its
+row.
+
+How it differs from a content mod:
+
+- The mod has code: `mod.wasm` is there beside the manifest, and no second
+  content mod of the same id is needed to carry the files (the carry of
+  [Machine recipes](#machine-recipes-capability-machine-recipes-experimental)
+  stays for server mods without `registries`).
+- The content loads in every window that has the mod on — including a pure
+  client window where the mod's code does not run (`side = "server"`). That
+  is the multiplayer path: a Horizon client with the same `.hmod` builds
+  the same overlay, so the state ids match the server's. The ids are
+  deterministic (vanilla's states, then the on mods' blocks in id order),
+  so both ends agree.
+- The mod's blocks live in a saved world as global state ids, as a content
+  mod's do: a world opened without the mod has unknown ids where they
+  stood.
+
+The id of a declared block is `<mod id>:<name>`, which the mod knows
+statically — it wrote the file: the `cells` example declares `cells:cell`
+(`data/cells/horizon/block/cell.json` in the example), a lodestone's
+behaviour under its own id, and claims it like the vanilla block by naming
+it in `block-entity-blocks` and `block-use-events`.
+
+**Not yet.** A vanilla client does not see a server mod's blocks (registry
+sync is not built: a Horizon client needs the same `.hmod` on); a mod
+cannot ask the game for the ids of its own declared blocks — it is the
+author of `data/<id>/horizon/block/`, so it knows them, and a claim naming
+a block nobody declares simply never fires.
 
 ## Publish your mod
 

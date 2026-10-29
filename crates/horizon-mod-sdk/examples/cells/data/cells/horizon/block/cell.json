@@ -1,0 +1,5 @@
+{
+  "template": "minecraft:lodestone",
+  "properties": { "hardness": 3.0 },
+  "item": true
+}

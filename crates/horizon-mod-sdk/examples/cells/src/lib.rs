@@ -1,7 +1,10 @@
 //! Example Horizon server mod (`docs/mods.md`, "Block entities", "Energy")
 //! with capabilities `block-entities` and `energy`: every lodestone a player
 //! places becomes an energy cell, an energy buffer any mod's machine can
-//! fill or drain. A cell charges itself each tick, shares its energy with the
+//! fill or drain — and so does the mod's own cell block, `cells:cell`,
+//! declared in its package's content (capability `registries`,
+//! `data/cells/horizon/block/cell.json`): a lodestone's behaviour under the
+//! mod's own id. A cell charges itself each tick, shares its energy with the
 //! cells beside it, and keeps it in the world's save; breaking one says what
 //! was lost. `/cell [pos]` reads the cell under the player (or at `pos`);
 //! `/cellgui [pos]`, or a right click on the cell, opens its menu
@@ -43,6 +46,16 @@ use std::collections::BTreeMap;
 
 /// The block that becomes a cell.
 const CELL: &str = "minecraft:lodestone";
+/// The mod's own cell block (capability `registries`,
+/// `data/cells/horizon/block/cell.json`): a lodestone under the mod's own
+/// id, claimed like the vanilla one.
+const OWN_CELL: &str = "cells:cell";
+
+/// Whether a block state is one of the mod's cells: the vanilla lodestone
+/// or the mod's own block, either with properties.
+fn is_cell(state: &str) -> bool {
+    matches!(state.split('[').next(), Some(CELL | OWN_CELL))
+}
 /// Energy a cell makes each tick, and the most it holds. A standing core
 /// charges its cell [`CORE_CHARGE`] times over.
 const CHARGE: u64 = 5;
@@ -702,11 +715,11 @@ impl ServerMod for Cells {
     }
 
     fn block_entity_blocks() -> Vec<String> {
-        vec![CELL.into()]
+        vec![CELL.into(), OWN_CELL.into()]
     }
 
     fn block_uses() -> Vec<String> {
-        vec![CELL.into()]
+        vec![CELL.into(), OWN_CELL.into()]
     }
 
     fn block_used(&mut self, player: &Player, b: &UsedBlock) {
@@ -1177,7 +1190,7 @@ impl ServerMod for Cells {
     }
 
     fn item_used_on_block(&mut self, player: &Player, stack: &HeldStack, block: &ItemUsedBlock) {
-        if stack.item != STAFF || block.state.split('[').next() != Some(CELL) || stack.count > 1 {
+        if stack.item != STAFF || !is_cell(&block.state) || stack.count > 1 {
             return;
         }
         // Only one of the mod's cells: a buffer of its own.
@@ -1546,6 +1559,15 @@ mod tests {
     fn fluids_are_named_the_way_players_type_them() {
         assert_eq!(fluid_name("water"), "minecraft:water");
         assert_eq!(fluid_name("cells:plasma"), "cells:plasma");
+    }
+
+    #[test]
+    fn both_cell_blocks_are_cells() {
+        for state in [CELL, OWN_CELL, "minecraft:lodestone[facing=north]"] {
+            assert!(is_cell(state), "{state}");
+        }
+        assert!(!is_cell("minecraft:stone"));
+        assert!(!is_cell("cells:other"));
     }
 
     #[test]
