@@ -25,6 +25,8 @@ pub struct BlockEntities {
     pub items: crate::items::Inventories,
     /// Capability `multiblocks`' watches on them.
     pub multiblocks: crate::multiblocks::Watches,
+    /// Capability `saved-data`' keys on the world itself.
+    pub saved_data: crate::saved_data::SavedData,
     /// Changed since the last [`BlockEntities::save`].
     dirty: bool,
 }
@@ -58,6 +60,7 @@ impl BlockEntities {
                 energy: crate::energy::Buffers::load(world),
                 items: crate::items::Inventories::load(world),
                 multiblocks: crate::multiblocks::Watches::load(world),
+                saved_data: crate::saved_data::SavedData::load(world),
                 ..Self::default()
             };
         };
@@ -65,12 +68,17 @@ impl BlockEntities {
         let Ok(saved) = parsed else {
             log::warn!("Horizon: {} does not parse: kept as .bad", path.display());
             let _ = std::fs::rename(&path, path.with_extension("json.bad"));
-            return Self::default();
+            // The mod data on the world itself is not this file's to lose.
+            return Self {
+                saved_data: crate::saved_data::SavedData::load(world),
+                ..Self::default()
+            };
         };
         let mut out = Self {
             energy: crate::energy::Buffers::load(world),
             items: crate::items::Inventories::load(world),
             multiblocks: crate::multiblocks::Watches::load(world),
+            saved_data: crate::saved_data::SavedData::load(world),
             ..Self::default()
         };
         for (id, entities) in saved {
@@ -90,6 +98,7 @@ impl BlockEntities {
         self.energy.save(world)?;
         self.items.save(world)?;
         self.multiblocks.save(world)?;
+        self.saved_data.save(world)?;
         if !self.dirty {
             return Ok(());
         }
@@ -170,11 +179,11 @@ impl BlockEntities {
     }
 }
 
-fn to_hex(data: &[u8]) -> String {
+pub(crate) fn to_hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn from_hex(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn from_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
     }
@@ -234,5 +243,28 @@ mod tests {
         assert_eq!(block_name("minecraft:stone"), "minecraft:stone");
         assert_eq!(from_hex(&to_hex(&[0, 1, 254])), Some(vec![0, 1, 254]));
         assert_eq!(from_hex("abc"), None);
+    }
+
+    /// A `block_entities.json` that doesn't parse must not take the mod
+    /// data saved on the world itself down with it.
+    #[test]
+    fn a_broken_file_keeps_the_saved_data() {
+        let dir = std::env::temp_dir().join(format!("horizon-be-saved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut saved = crate::saved_data::SavedData::default();
+        saved.set("m", "net", vec![7]).unwrap();
+        saved.save(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("data/horizon")).unwrap();
+        std::fs::write(BlockEntities::path(&dir), "nope").unwrap();
+        let be = BlockEntities::load(&dir);
+        assert_eq!(be.saved_data.get("m", "net"), Some(&[7][..]));
+        // As before: the other stores wait for their own readable files.
+        assert_eq!(be.of("m").count(), 0);
+        assert!(
+            BlockEntities::path(&dir)
+                .with_extension("json.bad")
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

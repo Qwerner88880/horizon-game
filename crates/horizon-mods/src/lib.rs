@@ -20,6 +20,7 @@ pub mod modpack;
 pub mod multiblocks;
 #[cfg(feature = "runtime")]
 mod runtime;
+pub mod saved_data;
 #[cfg(feature = "runtime")]
 pub mod testing;
 
