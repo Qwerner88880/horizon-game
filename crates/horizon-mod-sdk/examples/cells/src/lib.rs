@@ -6,8 +6,11 @@
 //! was lost. `/cell [pos]` reads the cell under the player (or at `pos`);
 //! `/cellgui [pos]`, or a right click on the cell, opens its menu
 //! (capability `menus`): its charge, kept up to date, and buttons to drain
-//! or fill it. Above each cell floats its charge, and a small redstone
-//! core spins (capability `displays`). Each cell has two slots (capability
+//! or fill it. Above each cell floats its charge, a small redstone core
+//! spins, and four nether stars circle it — item displays shown once and
+//! then only moved (capability `displays`); a sentinel carries a star of
+//! its own above its head, riding the golem wherever it walks. Each cell
+//! has two slots (capability
 //! `items`), shown in its menu: redstone put in the left one turns into
 //! energy, and the menu's Drain button turns energy into redstone in the
 //! right one, which players can only take from. A cobblestone or andesite
@@ -29,11 +32,11 @@
 //! at a time — their charge is the mod's own bytes on the stack, saved
 //! with it wherever it goes.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, ConfigEntry, ConfigValue, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
-    Multiblock, Particle, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
-    RedstoneOutput, Sides, TankSpec, Transform, UsedBlock, block_entities, displays, effects,
-    energy, entities, fluids, item_hooks, items, machine_recipes, menus, multiblocks, network, players,
-    redstone, saved_data,
+    Args, Argument, BlockEntity, ConfigEntry, ConfigValue, DisplayStack, Entity, HeldStack,
+    ItemUsedBlock, MenuItem, MenuSlot, ModEntity, Multiblock, Particle, Player, PlayerStack,
+    RedstoneOutput, Registration, ServerMod, Shape, Sides, SlotMode, SpawnOptions, Stack, TankSpec,
+    Transform, UsedBlock, block_entities, displays, effects, energy, entities, fluids, item_hooks,
+    items, machine_recipes, menus, multiblocks, network, players, redstone, saved_data,
 };
 use horizon_mod_sdk::server::{config, config_flag, config_integer, config_number, config_text};
 use std::collections::BTreeMap;
@@ -70,7 +73,11 @@ fn config_entries() -> Vec<ConfigEntry> {
             1.0,
             10.0,
         ),
-        ConfigEntry::text("sentinel-name", "The name shown over a sentinel.", "Sentinel"),
+        ConfigEntry::text(
+            "sentinel-name",
+            "The name shown over a sentinel.",
+            "Sentinel",
+        ),
         ConfigEntry::choice(
             "fx-sound",
             "The note block sound /cellfx plays.",
@@ -188,6 +195,12 @@ struct Cells {
     /// The mobs each player has felled this session (capability
     /// `game-events`), by player id.
     felled: BTreeMap<String, u32>,
+    /// The cells whose orbit is shown (capability `displays`): the stars
+    /// are made once and then only moved.
+    orbit: std::collections::BTreeSet<(String, i32, i32, i32)>,
+    /// The sentinels whose star is shown, by entity id: after a restart the
+    /// ids are new, and the stars are shown again.
+    stars: std::collections::BTreeSet<u32>,
 }
 
 /// The machine recipe kind this mod's files carry (`data/cells/recipe/`).
@@ -259,6 +272,41 @@ fn display_names(d: &str, x: i32, y: i32, z: i32) -> (String, String) {
         format!("text {d} {x} {y} {z}"),
         format!("core {d} {x} {y} {z}"),
     )
+}
+
+/// The stars that circle a cell (capability `displays`, `show-item`):
+/// item displays, shown once and then only moved, so the client walks them
+/// around the core.
+const ORBIT: usize = 4;
+/// How far from the cell's centre they circle.
+const RADIUS: f64 = 0.8;
+/// The item every orbiting display shows.
+const ORBIT_ITEM: &str = "minecraft:nether_star";
+
+/// The name of a cell's orbiting star `i`.
+fn orbit_name(d: &str, x: i32, y: i32, z: i32, i: usize) -> String {
+    format!("orbit {i} {d} {x} {y} {z}")
+}
+
+/// Where the orbit's star `i` stands at `degrees` (each refresh turns it
+/// [`TURN`] further): the offsets from the cell's centre, a quarter turn
+/// between neighbours.
+fn orbit_offset(degrees: f32, i: usize) -> (f64, f64) {
+    let a = f64::from(degrees.to_radians() + (i as f32) * std::f32::consts::FRAC_PI_2);
+    (RADIUS * a.cos(), RADIUS * a.sin())
+}
+
+/// The name of the star above a sentinel: an item display that rides the
+/// golem (`ride`), lifted above its head by its transform.
+fn star_name(id: u32) -> String {
+    format!("star {id}")
+}
+/// The transform of an item display's star: half size, held that far above
+/// where it stands (a riding display sits at its carrier's feet).
+fn star_transform() -> Transform {
+    Transform::identity()
+        .translated(0.0, 2.9, 0.0)
+        .scaled(0.5, 0.5, 0.5)
 }
 
 /// The menu of a cell holding `stored`.
@@ -759,13 +807,8 @@ impl ServerMod for Cells {
                     let _ = energy::set_stored(dimension, x, y, z, e);
                 }
                 // The gauge: the host does nothing when it is the same.
-                let _ = redstone::set_output(
-                    dimension,
-                    x,
-                    y,
-                    z,
-                    RedstoneOutput::weak(gauge_level(e)),
-                );
+                let _ =
+                    redstone::set_output(dimension, x, y, z, RedstoneOutput::weak(gauge_level(e)));
             }
         }
         if tick.is_multiple_of(REFRESH) {
@@ -802,6 +845,29 @@ impl ServerMod for Cells {
                     core_transform(degrees),
                     REFRESH as u32,
                 );
+                // Four nether stars circle the cell (an energy core's orbit):
+                // shown once, then only moved over the next refresh's span,
+                // so the client walks them round without a flicker.
+                let height = f64::from(y) + 1.4;
+                let first = self.orbit.insert((d.to_owned(), x, y, z));
+                for i in 0..ORBIT {
+                    let name = orbit_name(d, x, y, z, i);
+                    let (ox, oz) = orbit_offset(degrees, i);
+                    if first {
+                        let _ = displays::show_item(
+                            &name,
+                            d,
+                            cx + ox,
+                            height,
+                            cz + oz,
+                            &DisplayStack::new(ORBIT_ITEM),
+                            star_transform(),
+                            0,
+                        );
+                    } else {
+                        let _ = displays::move_(&name, cx + ox, height, cz + oz, REFRESH as u32);
+                    }
+                }
             }
         }
     }
@@ -810,6 +876,18 @@ impl ServerMod for Cells {
         let (text, core) = display_names(&entity.dimension, entity.x, entity.y, entity.z);
         displays::hide(&text);
         displays::hide(&core);
+        // The cell's orbit goes with it.
+        for i in 0..ORBIT {
+            displays::hide(&orbit_name(
+                &entity.dimension,
+                entity.x,
+                entity.y,
+                entity.z,
+                i,
+            ));
+        }
+        self.orbit
+            .remove(&(entity.dimension.clone(), entity.x, entity.y, entity.z));
         // The cell leaves its grids too; a grid that empties goes with it.
         leave_grids(&entity.dimension, entity.x, entity.y, entity.z);
         let here = (entity.dimension.clone(), entity.x, entity.y, entity.z);
@@ -876,12 +954,12 @@ impl ServerMod for Cells {
             };
             let text = text.trim();
             let value = match config::get(key) {
-                Some(ConfigValue::Flag(_)) => ConfigValue::Flag(
-                    text.parse().map_err(|_| "A flag is true or false")?,
-                ),
-                Some(ConfigValue::Integer(_)) => ConfigValue::Integer(
-                    text.parse().map_err(|_| "That is not a whole number")?,
-                ),
+                Some(ConfigValue::Flag(_)) => {
+                    ConfigValue::Flag(text.parse().map_err(|_| "A flag is true or false")?)
+                }
+                Some(ConfigValue::Integer(_)) => {
+                    ConfigValue::Integer(text.parse().map_err(|_| "That is not a whole number")?)
+                }
                 Some(ConfigValue::Number(_)) => {
                     ConfigValue::Number(text.parse().map_err(|_| "That is not a number")?)
                 }
@@ -910,7 +988,10 @@ impl ServerMod for Cells {
             }
             let word = args.string("fluid").unwrap_or("read");
             if word == "read" {
-                return Ok(Some(format!("Cell at {x} {y} {z}: {}", tank_text(d, x, y, z))));
+                return Ok(Some(format!(
+                    "Cell at {x} {y} {z}: {}",
+                    tank_text(d, x, y, z)
+                )));
             }
             if word == "drain" {
                 return match fluids::extract(d, x, y, z, 0, POUR, false) {
@@ -935,7 +1016,9 @@ impl ServerMod for Cells {
         }
         if name == "sentinel" {
             // Capability `entities`: a mob of the mod, two blocks from the
-            // player, that takes right clicks and has a name over it.
+            // player, that takes right clicks and has a name over it. A star
+            // rides it (capability `displays`): an item display lifted above
+            // the golem's head, carried wherever it walks.
             let id = entities::spawn(
                 &player.dimension,
                 player.x + 2.0,
@@ -945,6 +1028,9 @@ impl ServerMod for Cells {
                     .takes_use()
                     .named(&config_text("sentinel-name", "Sentinel")),
             )?;
+            if self.raise_star(id, &player.dimension, player.x + 2.0, player.y, player.z) {
+                self.stars.insert(id);
+            }
             return Ok(Some(format!("A sentinel stands guard (entity {id})")));
         }
         if name == "staff" {
@@ -1262,7 +1348,19 @@ impl ServerMod for Cells {
     }
 
     fn entity_tick(&mut self, tick: u64, mobs: &[ModEntity]) {
-        if tick % MEND_EVERY != 0 {
+        // A sentinel the mod has no star over gets one: after a restart the
+        // displays are gone and the mobs' ids are new, so the star is shown
+        // again and rides (capability `displays`).
+        for m in mobs {
+            if m.tag == SENTINEL
+                && !m.dying
+                && !self.stars.contains(&m.id)
+                && self.raise_star(m.id, &m.dimension, m.x, m.y, m.z)
+            {
+                self.stars.insert(m.id);
+            }
+        }
+        if !tick.is_multiple_of(MEND_EVERY) {
             return;
         }
         for m in mobs {
@@ -1286,6 +1384,8 @@ impl ServerMod for Cells {
     }
 
     fn entity_died(&mut self, entity: &ModEntity) {
+        // The star over its head goes first.
+        self.drop_star(entity.id);
         // A burst of smoke and the golem's own death sound where it fell.
         let smoke = Particle::new("minecraft:large_smoke", entity.x, entity.y, entity.z, 20)
             .spread(0.4, 0.6, 0.4);
@@ -1304,6 +1404,11 @@ impl ServerMod for Cells {
             "A sentinel fell at {:.0} {:.0} {:.0}",
             entity.x, entity.y, entity.z
         ));
+    }
+
+    fn entity_removed(&mut self, entity: &ModEntity) {
+        // Its star goes with it, as on its death.
+        self.drop_star(entity.id);
     }
 
     fn config_changed(&mut self, keys: &[String]) {
@@ -1391,6 +1496,35 @@ impl Cells {
         self.open.insert(player.id.clone(), (d.to_owned(), x, y, z));
         Ok(())
     }
+
+    /// Shows the star over mob `id` at a position and makes it ride: the
+    /// display sits where the mob stands, held above its head by its own
+    /// transform. False when the host would not show it.
+    fn raise_star(&mut self, id: u32, dimension: &str, x: f64, y: f64, z: f64) -> bool {
+        let star = star_name(id);
+        if displays::show_item(
+            &star,
+            dimension,
+            x,
+            y,
+            z,
+            &DisplayStack::new(ORBIT_ITEM),
+            star_transform(),
+            0,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        displays::ride(&star, Some(id)).is_ok()
+    }
+
+    /// Hides the star over mob `id`, if it has one.
+    fn drop_star(&mut self, id: u32) {
+        if self.stars.remove(&id) {
+            displays::hide(&star_name(id));
+        }
+    }
 }
 
 horizon_mod_sdk::export_server_mod!(Cells);
@@ -1435,6 +1569,42 @@ mod tests {
             assert!((turned.0 + tx).abs() < 1e-5 && (c + ty).abs() < 1e-5);
             assert!((turned.1 + tz).abs() < 1e-5);
         }
+    }
+
+    /// The orbit's stars sit on the circle, a quarter turn apart, and each
+    /// refresh's turn walks them along it: the position a `move` sends is
+    /// next to the one before, never across the circle. The angles are f32,
+    /// so a f32's turn of tolerance where one is taken.
+    #[test]
+    fn the_orbit_walks_its_stars_round_the_circle() {
+        let (x, z) = orbit_offset(0.0, 0);
+        assert!((x - RADIUS).abs() < 1e-9 && z.abs() < 1e-9);
+        // A quarter turn between neighbours, all at the same radius.
+        for i in 0..ORBIT {
+            let (x, z) = orbit_offset(0.0, i);
+            assert!((x * x + z * z - RADIUS * RADIUS).abs() < 1e-6);
+            let (nx, nz) = orbit_offset(90.0, i);
+            assert!((nx + z).abs() < 1e-6 && (nz - x).abs() < 1e-6);
+        }
+        // A full turn is where it began, and each star's name differs.
+        for i in 0..ORBIT {
+            let (x, z) = orbit_offset(360.0, i);
+            let (x0, z0) = orbit_offset(0.0, i);
+            assert!((x - x0).abs() < 1e-6 && (z - z0).abs() < 1e-6);
+        }
+        let names: Vec<String> = (0..ORBIT).map(|i| orbit_name("d", 1, 2, 3, i)).collect();
+        assert_eq!(names.len(), ORBIT);
+        assert!((1..ORBIT).all(|i| names[i] != names[0]));
+    }
+
+    /// A sentinel's star is held clear above its head, at half size: the
+    /// transform lifts a riding display, whose place is the mob's feet.
+    #[test]
+    fn a_sentinels_star_hovers_above_its_head() {
+        let t = star_transform();
+        let (_, ty, _) = t.translation;
+        assert!((ty - 2.9).abs() < 1e-5);
+        assert_eq!(t.scale, (0.5, 0.5, 0.5));
     }
 
     #[test]

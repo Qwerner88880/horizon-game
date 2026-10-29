@@ -226,7 +226,7 @@ pub mod server {
         self, ChoiceSpec, Entry as ConfigEntry, IntegerSpec, NumberSpec, Spec as ConfigSpec,
         Value as ConfigValue,
     };
-    pub use horizon::mods::displays::{self, Shape, Transform};
+    pub use horizon::mods::displays::{self, ItemStack as DisplayStack, Shape, Transform};
     pub use horizon::mods::effects::{self, Particle};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
     pub use horizon::mods::entities::{self, Entity as ModEntity, SpawnOptions};
@@ -701,6 +701,30 @@ pub mod server {
                 components.push_str(&format!(",lore=[{}]", lines.join(",")));
             }
             self.components = format!("[{components}]");
+            self
+        }
+    }
+
+    impl DisplayStack {
+        /// One of `item`, with no components: the stack an item display
+        /// shows the model of (`displays::show-item`).
+        pub fn new(item: &str) -> Self {
+            Self {
+                item: item.into(),
+                count: 1,
+                components: String::new(),
+            }
+        }
+        /// `count` of the item (1 to 99): a display's stack is a look, not
+        /// storage.
+        pub fn count(mut self, count: u32) -> Self {
+            self.count = count;
+            self
+        }
+        /// Components beyond the item's own, in vanilla's item syntax
+        /// (up to 512 bytes).
+        pub fn components(mut self, components: &str) -> Self {
+            self.components = components.into();
             self
         }
     }

@@ -1,0 +1,70 @@
+# Capability displays, level 23: a cell's charge, its spinning core and
+# four nether stars that circle it — item displays, shown once and then
+# only moved, so the client walks them round the core without a flicker.
+# /sentinel's golem gets a star of its own above its head, carried along
+# (`ride`); the cell broken, every display of it goes.
+
+# A lodestone becomes a cell.
+[[step]]
+join = "Alex"
+place = { x = 0, y = 64, z = 0, state = "minecraft:lodestone" }
+
+# The first refresh (tick 10: the core has turned one step, 30 degrees)
+# shows the charge, the core and the orbit.
+[[step]]
+ticks = 10
+expect.displays = [
+  "block minecraft:redstone_block @ 0.5 65.2 0.5",
+  "item minecraft:nether_star x1 @ 1.2 65.4 0.9",
+  "item minecraft:nether_star x1 @ 0.1 65.4 1.2",
+  "item minecraft:nether_star x1 @ -0.2 65.4 0.1",
+  "item minecraft:nether_star x1 @ 0.9 65.4 -0.2",
+  "text 50 FE @ 0.5 65.6 0.5",
+]
+
+# The next refresh (tick 20: 60 degrees) only moves the orbit and turns the
+# core: the stars are never remade.
+[[step]]
+ticks = 10
+expect.displays = [
+  "block minecraft:redstone_block @ 0.5 65.2 0.5",
+  "item minecraft:nether_star x1 @ 0.9 65.4 1.2",
+  "item minecraft:nether_star x1 @ -0.2 65.4 0.9",
+  "item minecraft:nether_star x1 @ 0.1 65.4 -0.2",
+  "item minecraft:nether_star x1 @ 1.2 65.4 0.1",
+  "text 100 FE @ 0.5 65.6 0.5",
+]
+
+# /sentinel: a golem of the mod's own, with a star riding it above its head.
+[[step]]
+command = "sentinel"
+expect.feedback = "A sentinel stands guard (entity 1000)"
+expect.displays = [
+  "block minecraft:redstone_block @ 0.5 65.2 0.5",
+  "item minecraft:nether_star x1 @ 0.9 65.4 1.2",
+  "item minecraft:nether_star x1 @ -0.2 65.4 0.9",
+  "item minecraft:nether_star x1 @ 0.1 65.4 -0.2",
+  "item minecraft:nether_star x1 @ 1.2 65.4 0.1",
+  "item minecraft:nether_star x1 @ 2.5 64.0 0.5 riding 1000",
+  "text 100 FE @ 0.5 65.6 0.5",
+]
+
+# The cell broken: its charge, core and orbit go on the next tick (a
+# step's ticks run before its break, so tick 30 first moved the orbit to 90
+# degrees); the sentinel keeps its star.
+[[step]]
+break = { x = 0, y = 64, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+expect.displays = ["item minecraft:nether_star x1 @ 2.5 64.0 0.5 riding 1000"]
+
+# The golem killed (a step's ticks run before its strike): its death is
+# told on the next tick, and its star goes with it.
+[[step]]
+strike = { tag = "sentinel", damage = 60.0 }
+expect.dealt = 20.0
+
+[[step]]
+ticks = 1
+expect.displays = []

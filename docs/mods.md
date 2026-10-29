@@ -327,6 +327,7 @@ checked:
 | `told = ["Alex: Welcome!"]`, `broadcast = ["..."]` | server mods: every `players.tell` (as `name: text`) and `players.broadcast`, in order |
 | `blocks = [{ x = 2, y = 64, z = 0, state = "minecraft:glowstone" }]` | server mods with `world`: those blocks of the Overworld after the step, the mod's `set-blocks` made (the script checks a state's shape; the game checks its name) |
 | `entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=20"]`, `dealt = 2.0` | server mods with `entities`: the mods' mobs after the step as `tag kind x y z hp=health` (` dying` after it for a body), ordered by id; and the damage the step's `strike` dealt |
+| `displays = ["item minecraft:nether_star x1 @ 0.5 64.6 0.5 riding 1000"]` | server mods with `displays`: their display entities after the step as `kind what @ x y z` (`text 8000 FE`, `block minecraft:redstone_block`, `item minecraft:nether_star x1`), ordered by name, ` riding <mob id>` after a riding one |
 | `stopped = "panic"` | the mod was turned off, for a reason holding this text; without it, a mod that traps, panics or overruns fails the test |
 
 Unknown keys are errors, so a typo never passes silently. The same runner is
@@ -959,20 +960,38 @@ vanilla does. A right click on a `cells` lodestone opens its menu.
 
 #### Displays (capability `displays`, experimental)
 
-Block models and text a server mod shows in the world, not as blocks:
-`displays::show(name, dimension, x, y, z, shape, transform, interpolation)`
-shows the mod's display `name` or changes it, `hide(name)` removes it.
-`Shape::Block("minecraft:redstone_block")` draws a block's model from the
-position as its corner; `Shape::Text(text)` floats text that faces whoever
-looks at it. `Transform::identity().scaled(..).turned_y(..).translated(..)`
-moves, scales and turns it; the client blends to a new transform over
+Block models, item models and text a server mod shows in the world, not as
+blocks: `displays::show(name, dimension, x, y, z, shape, transform,
+interpolation)` shows the mod's display `name` or changes it, `hide(name)`
+removes it. `Shape::Block("minecraft:redstone_block")` draws a block's
+model from the position as its corner; `Shape::Text(text)` floats text
+that faces whoever looks at it; `show_item(name, dimension, x, y, z,
+&DisplayStack::new("minecraft:nether_star"), transform, interpolation)`
+draws an item's model — the stack is a look, not storage (count 1 to 99,
+components up to 512 bytes in vanilla's item syntax).
+`Transform::identity().scaled(..).turned_y(..).translated(..)` moves,
+scales and turns it; the client blends to a new transform over
 `interpolation` ticks, so a display updated every few ticks moves smoothly.
-Each is a vanilla display entity sent to the players in its dimension
-(clients joining later get it too); it lasts while the mod runs and is never
-saved. Up to 1024 per mod. Above each `cells` lodestone float its charge
-and a spinning redstone core.
+`move_(name, x, y, z, interpolation)` moves a display of any shape without
+remaking it — the client walks it there over `interpolation` ticks (at most
+59), so an orbit updated every few ticks never flickers; a display riding
+a mob is put down first. `ride(name, Some(entity))` makes a display ride
+one of the mod's mobs (capability `entities`), carried along: it sits
+where the mob stands, lifted by its own `transform.translation`;
+`ride(name, None)` puts it down where it stands. At most 16 displays ride
+one mob.
 
-**Not yet.** Item displays; Horizon's client draws block and text displays.
+Each is a vanilla display entity (`block_display`, `item_display`,
+`text_display`) sent to the players in its dimension (clients joining later
+get it too); it lasts while the mod runs and is never saved — a mod
+restores what it needs after a restart (the cells example re-shows its
+stars and re-rides them in `entity_tick`, where the mobs' new ids are).
+Up to 1024 per mod. Above each `cells` lodestone float its charge, a
+spinning redstone core and four nether stars that circle it; a sentinel
+carries a star above its head.
+
+**Not yet.** Free model files (Blockbench/GeckoLib): a display is a block,
+an item or text.
 
 #### Machine recipes (capability `machine-recipes`, experimental)
 

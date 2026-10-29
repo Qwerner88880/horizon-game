@@ -44,6 +44,10 @@ pub struct TestGame {
     /// The mobs of the mods (capability `entities`), in the Overworld: what
     /// the mods spawned, steered and hurt. Every mob has 20 health.
     pub entities: Vec<crate::EntityInfo>,
+    /// The mods' display entities (capability `displays`), as the game keeps
+    /// them: shown or changed by `show` and `show-item`, moved by `move`,
+    /// carried by `ride`. Never saved, as in the game.
+    pub displays: Vec<TestDisplay>,
     /// Mobs that take a right click (spawned with `takes-use`).
     entity_takes_use: std::collections::BTreeSet<u32>,
     /// The next entity id a spawn takes.
@@ -70,6 +74,22 @@ const TEST_MOBS: [&str; 8] = [
     "minecraft:sheep",
     "minecraft:villager",
 ];
+
+/// One of the mods' display entities (capability `displays`), as a test
+/// reads it after a step.
+#[derive(Clone, Debug)]
+pub struct TestDisplay {
+    /// The mod that showed it.
+    pub mod_id: String,
+    pub name: String,
+    /// `text`, `block` or `item`.
+    pub kind: &'static str,
+    /// What it shows: the text, the block's state, or `item x<count>`.
+    pub what: String,
+    pub pos: [f64; 3],
+    /// The mod's mob that carries it (`ride`), if it rides one.
+    pub riding: Option<u32>,
+}
 
 /// The world a script's mod reads: [`TestGame::world`], copied for a step.
 struct ScriptWorld(std::collections::BTreeMap<(i32, i32, i32), String>);
@@ -236,6 +256,7 @@ impl TestGame {
             block_entities: Default::default(),
             stacks: Default::default(),
             entities: Vec::new(),
+            displays: Vec::new(),
             entity_takes_use: Default::default(),
             entity_next: 1000,
             entity_died: Vec::new(),
@@ -915,9 +936,107 @@ impl TestGame {
     pub fn status(&self) -> &Status {
         &self.mods.entries()[0].status
     }
-    /// What the mod showed since the last call.
+    /// What the mod showed since the last call; the mods' display entities
+    /// are settled from it, as the game's tick does with them.
     pub fn drain(&mut self) -> Vec<Output> {
-        self.mods.drain()
+        let out = self.mods.drain();
+        self.settle_displays(&out);
+        out
+    }
+
+    /// Applies what the mods did to their display entities, as the game's
+    /// tick does: shown or changed (`show`, `show-item`), hidden, moved (a
+    /// riding one put down first) and made to ride one of the mod's own
+    /// mobs (`ride`), or put down.
+    fn settle_displays(&mut self, out: &[Output]) {
+        for o in out {
+            match o {
+                Output::ShowDisplay {
+                    mod_id,
+                    name,
+                    pos,
+                    shape,
+                    ..
+                } => {
+                    let (kind, what) = match shape {
+                        crate::DisplayShape::Block(state) => ("block", state.clone()),
+                        crate::DisplayShape::Text(text) => ("text", text.clone()),
+                    };
+                    self.displays
+                        .retain(|d| !(d.mod_id == *mod_id && d.name == *name));
+                    self.displays.push(TestDisplay {
+                        mod_id: mod_id.clone(),
+                        name: name.clone(),
+                        kind,
+                        what,
+                        pos: *pos,
+                        riding: None,
+                    });
+                }
+                Output::ShowItemDisplay {
+                    mod_id,
+                    name,
+                    pos,
+                    stack,
+                    ..
+                } => {
+                    self.displays
+                        .retain(|d| !(d.mod_id == *mod_id && d.name == *name));
+                    self.displays.push(TestDisplay {
+                        mod_id: mod_id.clone(),
+                        name: name.clone(),
+                        kind: "item",
+                        what: format!("{} x{}", stack.item, stack.count),
+                        pos: *pos,
+                        riding: None,
+                    });
+                }
+                Output::HideDisplay { mod_id, name } => {
+                    self.displays
+                        .retain(|d| !(d.mod_id == *mod_id && d.name == *name));
+                }
+                Output::MoveDisplay {
+                    mod_id, name, pos, ..
+                } => {
+                    if let Some(d) = self
+                        .displays
+                        .iter_mut()
+                        .find(|d| d.mod_id == *mod_id && d.name == *name)
+                    {
+                        d.pos = *pos;
+                        d.riding = None;
+                    }
+                }
+                Output::RideDisplay {
+                    mod_id,
+                    name,
+                    entity,
+                } => {
+                    let Some(d) = self
+                        .displays
+                        .iter_mut()
+                        .find(|d| d.mod_id == *mod_id && d.name == *name)
+                    else {
+                        continue;
+                    };
+                    if d.riding == *entity {
+                        continue;
+                    }
+                    if let Some(id) = entity {
+                        if self
+                            .entities
+                            .iter()
+                            .any(|e| e.id == *id && e.owner == *mod_id)
+                        {
+                            d.riding = Some(*id);
+                        }
+                    } else {
+                        d.riding = None;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -1263,6 +1382,11 @@ pub struct Expect {
     /// The mods' mobs after the step (capability `entities`), as
     /// `tag kind x y z hp=health`, ordered by id; a dying one ends `dying`.
     entities: Option<Vec<String>>,
+    /// The mods' display entities after the step (capability `displays`),
+    /// as `kind what @ x y z` (`item minecraft:nether_star x1 @ 0.5 64.6
+    /// 0.5`, `text 8000 FE @ …`, `block minecraft:redstone_block @ …`),
+    /// ordered by name; a riding one ends ` riding <mob id>`.
+    displays: Option<Vec<String>>,
     /// The damage the mob's mod let through the step's `strike`.
     dealt: Option<f32>,
     /// Server mods: every `players.tell` as `"Name: text"`, and every
@@ -1793,6 +1917,25 @@ impl Step {
                 })
                 .collect();
             same("entities", want, &got)?;
+        }
+        if let Some(want) = &e.displays {
+            let mut shown: Vec<&TestDisplay> = game.displays.iter().collect();
+            shown.sort_by(|a, b| a.name.cmp(&b.name));
+            let got: Vec<String> = shown
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{} {} @ {:.1} {:.1} {:.1}{}",
+                        d.kind,
+                        d.what,
+                        d.pos[0],
+                        d.pos[1],
+                        d.pos[2],
+                        d.riding.map_or(String::new(), |id| format!(" riding {id}"))
+                    )
+                })
+                .collect();
+            same("displays", want, &got)?;
         }
         if let Some(want) = e.dealt {
             same("dealt", &Some(want), &dealt)?;
