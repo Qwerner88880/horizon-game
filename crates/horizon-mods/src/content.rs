@@ -589,6 +589,43 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn a_server_mod_with_registries_carries_its_content() {
+        let manifest = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+             capabilities = [\"players\", \"machine-recipes\", \"registries\"]\n\
+             experimental = [\"machine-recipes\"]\n";
+        let read = |manifest: &str, files: &[(&str, &[u8])]| {
+            let dir = scratch("server-content");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(manifest, Some(b"\0asm"), files).unwrap(),
+            )
+            .unwrap();
+            let out = Package::read(&path).and_then(|p| Content::read(&path, &p.manifest));
+            std::fs::remove_dir_all(&dir).unwrap();
+            out
+        };
+        // The same fence a 0.2 content mod lives in: a block and an item
+        // declared, an asset of its own, a vanilla tag and its recipes, all
+        // in the one package with the code.
+        let files: &[(&str, &[u8])] = &[
+            ("data/m/horizon/block/cell.json", BLOCK),
+            ("data/m/horizon/item/gem.json", ITEM),
+            ("assets/m/textures/block/cell.png", b"png"),
+            ("data/minecraft/tags/block/mineable/pickaxe.json", b"{}"),
+            ("data/m/recipe/grind/a.json", b"{}"),
+        ];
+        let content = read(manifest, files).unwrap();
+        assert_eq!(content.files.len(), 5);
+        assert_eq!(content.blocks[0].id, "m:cell");
+        assert_eq!(content.items[0].id, "m:gem");
+        // Without `registries` it is back to its recipes and structures.
+        let bare = manifest.replace(", \"registries\"", "");
+        let e = read(&bare, files).unwrap_err();
+        assert!(e.contains("not capability registries"), "{e}");
+    }
+
+    #[test]
     fn folder_mod_reads_the_same() {
         let dir = scratch("folder");
         std::fs::write(dir.join(MANIFEST), MANIFEST_TEXT).unwrap();

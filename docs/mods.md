@@ -1022,9 +1022,9 @@ the example), and its `/cellrecipes` counts the recipes.
 **Not yet.** Changed recipe files are read at the next start of the mods (a
 dev rebuild of the code alone keeps the table as it was); tags are expanded
 once, at load, and a tag naming no item skips its recipe; the mod's id is the
-only namespace (a server mod's manifest may list no other); recipes are not
-per-world and never saved with one, being content; `by-input` matches items,
-not components.
+only namespace — unless it also has `registries`, whose manifest may list
+others; recipes are not per-world and never saved with one, being content;
+`by-input` matches items, not components.
 
 #### Multiblocks (capability `multiblocks`, experimental)
 
@@ -1391,13 +1391,12 @@ so the same rustc and `Cargo.lock` give the same file.
   host and the dedicated server ([Server mods](#server-mods-api-03-experimental)).
   They use only vanilla messages, so any client, vanilla or Horizon, can join.
 - **Both** (`side = "both"`): a server mod with a client half (new blocks,
-  their textures, a custom screen). On join the Horizon server announces its
-  mods (id, version, SHA-256) on a `horizon:mods` custom payload channel; a
-  Horizon client with matching client halves enables them for that session, or
-  offers to download them from the same source the launcher uses. Vanilla
-  clients are refused only if the server says its mods need a client.
-- Registries (new blocks and items) are server-owned and synced like vanilla's
-  registry sync, so ids match on both ends.
+  their textures, a custom screen). Nothing is announced or sent on join
+  yet: a Horizon client needs the same mod on — its content loads from the
+  same `.hmod` the server's did, so the ids match.
+- Registries (new blocks and items) are not synced to clients: a vanilla
+  client joins but does not see a server mod's blocks. Registry sync is a
+  later stage.
 
 ## Distribution
 

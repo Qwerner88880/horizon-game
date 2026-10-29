@@ -83,8 +83,9 @@ pub enum Capability {
     Storage,
     /// Runs vanilla commands as the player, with the player's permissions.
     Command,
-    /// New blocks and items from the mod's `data/` (API 0.2): no WIT
-    /// interface, the game reads them before the world loads.
+    /// New blocks and items from the mod's `data/` (API 0.2, and API 0.3
+    /// for a server mod): no WIT interface, the game reads them before the
+    /// world loads.
     Registries,
     /// A screen the mod owns and a settings page in Options > Mods, drawn
     /// with the menus' own widgets (interface `ui`, calls `ui-events`).
@@ -178,9 +179,12 @@ impl Capability {
         Capability::Config,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
-    /// is also a client mod's.
+    /// is also a client mod's, and either side's may carry content.
     pub fn both_sides(self) -> bool {
-        matches!(self, Capability::Storage | Capability::Network)
+        matches!(
+            self,
+            Capability::Storage | Capability::Network | Capability::Registries
+        )
     }
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -408,9 +412,12 @@ impl Manifest {
                 APIS.join(" and ")
             ));
         }
-        if m.capabilities.contains(&Capability::Registries) && m.api == API {
+        if m.capabilities.contains(&Capability::Registries)
+            && !matches!(m.api.as_str(), "0.2" | SERVER_API)
+        {
             return Err(format!(
-                "{MANIFEST}: capability registries needs api = \"0.2\""
+                "{MANIFEST}: capability registries needs api = \"0.2\" or \"{SERVER_API}\" \
+                 (0.3: a server mod may carry it too)"
             ));
         }
         let server = m.side == Side::Server;
@@ -693,6 +700,41 @@ capabilities = ["game-read", "hud"]
         assert!(e.contains("capability hud is for client mods"), "{e}");
         let e = server("0.1", "client", "\"players\"").unwrap_err();
         assert!(e.contains("capability players is for server mods"), "{e}");
+    }
+
+    #[test]
+    fn a_server_mod_may_carry_registries() {
+        let server = |caps: &str, extra: &str| {
+            Manifest::parse(&format!(
+                "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+                 capabilities = [{caps}]\n{extra}"
+            ))
+        };
+        // Content beside the code, and namespaces as a content mod lists
+        // them, under the same rules.
+        let m = server("\"players\", \"storage\", \"registries\"", "").unwrap();
+        assert!(m.capabilities.contains(&Capability::Registries));
+        let m = server("\"players\", \"registries\"", "namespaces = [\"kaisyn\"]\n").unwrap();
+        assert_eq!(m.owned_namespaces().collect::<Vec<_>>(), ["m", "kaisyn"]);
+        // API 0.1 still refuses it, naming the lines that may carry it.
+        let e = Manifest::parse(
+            "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\ncapabilities = [\"registries\"]\n",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("capability registries needs api = \"0.2\" or \"0.3\""),
+            "{e}"
+        );
+        // A content mod of either side still parses: the capability belongs
+        // to both sides.
+        for side in ["client", "both"] {
+            let m = Manifest::parse(&format!(
+                "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.2\"\nside = \"{side}\"\n\
+                 capabilities = [\"registries\"]\n"
+            ))
+            .unwrap();
+            assert!(m.capabilities.contains(&Capability::Registries), "{side}");
+        }
     }
 
     #[test]

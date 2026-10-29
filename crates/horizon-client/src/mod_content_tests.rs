@@ -881,3 +881,58 @@ fn a_replacing_mod_tag_reaches_the_root() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+/// A server mod's own content (capability `registries` on API 0.3): the
+/// same overlay a content mod's files build, from the mod that also has
+/// code. Its block joins the registry after vanilla's states, its item in
+/// the item table.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_carries_a_server_mods_content() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-server-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("cells");
+    let files = [
+        (
+            "horizon-mod.toml",
+            "id = \"cells\"\nname = \"Cells\"\nversion = \"1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"registries\"]\n",
+        ),
+        (
+            "data/cells/horizon/block/cell.json",
+            r#"{"template": "minecraft:lodestone", "properties": {"hardness": 3.0, "light": 3},
+                "item": true}"#,
+        ),
+        (
+            "assets/cells/lang/en_us.json",
+            r#"{"block.cells.cell": "Energy Cell"}"#,
+        ),
+    ];
+    for (name, text) in files {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    // A server mod has code: a stub component beside its manifest.
+    fs::write(dir.join("mod.wasm"), b"\0asm").unwrap();
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    assert!(package.wasm.is_some(), "a server mod carries its code");
+    let m = ContentMod {
+        id: "cells".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let vanilla = Assets::load(&base).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    // States after vanilla's, the mod's blocks in id order.
+    let cell = assets.registry.default_state("cells:cell").unwrap();
+    assert_eq!(cell, BlockStateId(vanilla.registry.len() as u32));
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    assert_eq!(facts.get(cell).emission, 3);
+    let items = Items::load(&root, assets.registry, &facts).unwrap();
+    assert_eq!(items.items["cells:cell"].block, Some(cell));
+    assert!(root.join("assets/cells/lang/en_us.json").is_file());
+    let _ = fs::remove_dir_all(&scratch);
+}
