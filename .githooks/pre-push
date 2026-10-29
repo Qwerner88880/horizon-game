@@ -1,2 +1,8 @@
 #!/bin/sh
-exec python3 tools/check_public_tree.py --pre-push
+# python3 where there is one; some Windows installs have only the Store's
+# stub under that name (it prints "Python" and exits 49) and a real
+# interpreter as `python`.
+if python3 -c "pass" >/dev/null 2>&1; then
+    exec python3 tools/check_public_tree.py --pre-push
+fi
+exec python tools/check_public_tree.py --pre-push

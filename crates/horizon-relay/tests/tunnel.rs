@@ -449,7 +449,24 @@ fn slow_first_lines_and_too_many_connections_are_closed() {
     let mut over = TcpStream::connect(&address).unwrap();
     over.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     assert_eq!(over.read(&mut [0u8; 1]).unwrap_or(0), 0);
-    while slow.write_all(b"{").is_ok() && started.elapsed() < Duration::from_secs(5) {
+    // The trickle never finishes the line, so only the deadline can end it.
+    // How the client learns of the cut differs: Unix fails a write into a
+    // closed connection, Windows keeps accepting writes and only ends the
+    // stream, so both are watched.
+    slow.set_read_timeout(Some(Duration::from_millis(10)))
+        .unwrap();
+    let ended = |r: std::io::Result<usize>| match r {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    };
+    while slow.write_all(b"{").is_ok()
+        && started.elapsed() < Duration::from_secs(5)
+        && !ended(slow.read(&mut [0u8; 1]))
+    {
         std::thread::sleep(Duration::from_millis(200));
     }
     let closed = started.elapsed();

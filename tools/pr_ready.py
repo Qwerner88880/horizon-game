@@ -37,6 +37,13 @@ if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+if sys.version_info < (3, 11):
+    sys.exit(
+        f"pr_ready needs Python 3.11 or newer (this is {sys.version.split()[0]}); "
+        "the Python tests it runs use tomllib and hashlib.file_digest. "
+        "On Windows: py -3.12 tools/pr_ready.py"
+    )
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 FLEET_SHARED = Path.home() / "code" / "horizon-parity" / "shared-local" / "parity-shared"
