@@ -15,20 +15,24 @@
 //! recipes (capability `machine-recipes`, `data/cells/recipe/`), which the
 //! game loads before the mod starts; `/cellrecipes` counts them. Its
 //! energy core is a multiblock (capability `multiblocks`,
-//! `data/cells/multiblock/`): a ring of iron around the cell, which
-//! `/cellcore` says is whole or names the first block it needs.
+//! `data/cells/multiblock/`): a ring of iron around the cell, watched from
+//! its first tick, so the game tells when it comes together and when it no
+//! longer holds; a standing core charges its cell ten times over, and
+//! `/cellcore` says it is whole or names the first block it needs.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, MenuItem, MenuSlot, Player, Registration, ServerMod, Shape,
-    SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items,
+    Args, Argument, BlockEntity, MenuItem, MenuSlot, Multiblock, Player, Registration, ServerMod,
+    Shape, SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items,
     machine_recipes, menus, multiblocks, players,
 };
 use std::collections::BTreeMap;
 
 /// The block that becomes a cell.
 const CELL: &str = "minecraft:lodestone";
-/// Energy a cell makes each tick, and the most it holds.
+/// Energy a cell makes each tick, and the most it holds. A standing core
+/// charges its cell [`CORE_CHARGE`] times over.
 const CHARGE: u64 = 5;
 const CAPACITY: u64 = 100_000;
+const CORE_CHARGE: u64 = 10;
 /// Energy that may flow between two cells side by side each tick.
 const FLOW: u64 = 100;
 
@@ -36,6 +40,8 @@ const FLOW: u64 = 100;
 #[derive(Default)]
 struct Cells {
     open: BTreeMap<String, (String, i32, i32, i32)>,
+    /// The anchors whose core stands (capability `multiblocks`), by place.
+    cores: std::collections::BTreeSet<(String, i32, i32, i32)>,
     /// The mod's grinding recipes, read once in `init` (capability
     /// `machine-recipes`): they never change while the mod runs.
     recipes: Vec<machine_recipes::MachineRecipe>,
@@ -176,20 +182,24 @@ fn core_need(dimension: &str, x: i32, y: i32, z: i32) -> Result<Option<String>, 
             Err(e) => return Err(e),
         }
     }
-    Ok(first.map(|m| {
-        format!(
-            "needs {} at {} {} {} ({} there)",
-            m.expected, m.x, m.y, m.z, m.found
-        )
-    }))
+    Ok(first.map(|m| core_missing(&m)))
 }
 
-/// One tick of every cell: each charges, then each pair side by side
-/// moves energy from the fuller toward the emptier, up to [`FLOW`]. Takes
-/// and gives back energies by position.
-fn step(cells: &mut BTreeMap<(i32, i32, i32), u64>) {
+/// What one mismatch of the core says to the player.
+fn core_missing(m: &multiblocks::Mismatch) -> String {
+    format!(
+        "needs {} at {} {} {} ({} there)",
+        m.expected, m.x, m.y, m.z, m.found
+    )
+}
+
+/// One tick of every cell: each charges by its gain (a standing core's
+/// [`CORE_CHARGE`] times over), then each pair side by side moves energy
+/// from the fuller toward the emptier, up to [`FLOW`]. Takes and gives
+/// back energies by position.
+fn step(cells: &mut BTreeMap<(i32, i32, i32), (u64, u64)>) {
     for e in cells.values_mut() {
-        *e = (*e + CHARGE).min(CAPACITY);
+        e.0 = (e.0 + e.1).min(CAPACITY);
     }
     let positions: Vec<_> = cells.keys().copied().collect();
     for &(x, y, z) in &positions {
@@ -198,14 +208,15 @@ fn step(cells: &mut BTreeMap<(i32, i32, i32), u64>) {
             let (Some(&a), Some(&b)) = (cells.get(&(x, y, z)), cells.get(&n)) else {
                 continue;
             };
+            let (a, b) = (a.0, b.0);
             let moved = (a.abs_diff(b) / 2).min(FLOW);
             let (from, to) = if a > b {
                 ((x, y, z), n)
             } else {
                 (n, (x, y, z))
             };
-            *cells.get_mut(&from).expect("listed") -= moved;
-            *cells.get_mut(&to).expect("listed") += moved;
+            cells.get_mut(&from).expect("listed").0 -= moved;
+            cells.get_mut(&to).expect("listed").0 += moved;
         }
     }
 }
@@ -245,7 +256,7 @@ impl ServerMod for Cells {
 
     fn block_entity_tick(&mut self, tick: u64, entities: &[BlockEntity]) {
         // Cells share only within a dimension.
-        let mut dimensions: BTreeMap<&str, BTreeMap<(i32, i32, i32), u64>> = BTreeMap::new();
+        let mut dimensions: BTreeMap<&str, BTreeMap<(i32, i32, i32), (u64, u64)>> = BTreeMap::new();
         for e in entities {
             let (d, x, y, z) = (&e.dimension, e.x, e.y, e.z);
             // Other mods' machines may take up to FLOW a tick from a cell,
@@ -254,6 +265,13 @@ impl ServerMod for Cells {
                 let _ = energy::set_storage(d, x, y, z, CAPACITY, FLOW, FLOW);
                 let _ = energy::set_stored(d, x, y, z, legacy_energy(&e.data));
                 let _ = block_entities::set(d, x, y, z, &[]);
+                // Ask after the core once, where the world is lent: the
+                // answer says whether it already stands (events don't
+                // repeat after a restart), and the game follows it from
+                // here, telling formed and broken.
+                if matches!(multiblocks::watch(d, x, y, z, CORE_ID), Ok(Some(_))) {
+                    self.cores.insert((d.to_owned(), x, y, z));
+                }
             }
             if items::get(d, x, y, z).is_none() {
                 let _ = items::set_slots(d, x, y, z, 2);
@@ -284,16 +302,23 @@ impl ServerMod for Cells {
                 let _ = items::extract(d, x, y, z, INPUT, 1, false);
                 let _ = energy::set_stored(d, x, y, z, stored(d, x, y, z) + STEP);
             }
-            dimensions
-                .entry(d)
-                .or_default()
-                .insert((x, y, z), stored(d, x, y, z));
+            dimensions.entry(d).or_default().insert(
+                (x, y, z),
+                (
+                    stored(d, x, y, z),
+                    if self.cores.contains(&(d.to_owned(), x, y, z)) {
+                        CHARGE * CORE_CHARGE
+                    } else {
+                        CHARGE
+                    },
+                ),
+            );
         }
         for (dimension, mut cells) in dimensions {
             let before = cells.clone();
             step(&mut cells);
-            for ((x, y, z), e) in cells {
-                if before.get(&(x, y, z)) != Some(&e) {
+            for ((x, y, z), (e, _)) in cells {
+                if before.get(&(x, y, z)).map(|b| b.0) != Some(e) {
                     let _ = energy::set_stored(dimension, x, y, z, e);
                 }
             }
@@ -392,6 +417,24 @@ impl ServerMod for Cells {
             "Cell at {x} {y} {z}: {} / {CAPACITY} FE",
             stored(d, x, y, z)
         )))
+    }
+
+    fn multiblock_formed(&mut self, block: &Multiblock) {
+        self.cores
+            .insert((block.dimension.clone(), block.x, block.y, block.z));
+        players::broadcast(&format!(
+            "The core at {} {} {} formed",
+            block.x, block.y, block.z
+        ));
+    }
+
+    fn multiblock_broken(&mut self, block: &Multiblock) {
+        self.cores
+            .remove(&(block.dimension.clone(), block.x, block.y, block.z));
+        players::broadcast(&format!(
+            "The core at {} {} {} broke",
+            block.x, block.y, block.z
+        ));
     }
 
     fn menu_clicked(&mut self, player: &Player, _menu: &str, slot: u32, _button: u8, _shift: bool) {
@@ -559,22 +602,45 @@ mod tests {
     fn a_new_cell_is_empty_and_charges() {
         assert_eq!(legacy_energy(&[]), 0);
         assert_eq!(legacy_energy(&7u64.to_le_bytes()), 7);
-        let mut cells = BTreeMap::from([((0, 64, 0), 0)]);
+        let mut cells = BTreeMap::from([((0, 64, 0), (0, CHARGE))]);
         step(&mut cells);
-        assert_eq!(cells[&(0, 64, 0)], CHARGE);
-        cells.insert((0, 64, 0), CAPACITY);
+        assert_eq!(cells[&(0, 64, 0)].0, CHARGE);
+        // A standing core charges its cell ten times over.
+        cells.insert((0, 64, 0), (0, CHARGE * CORE_CHARGE));
         step(&mut cells);
-        assert_eq!(cells[&(0, 64, 0)], CAPACITY);
+        assert_eq!(cells[&(0, 64, 0)].0, CHARGE * CORE_CHARGE);
+        cells.insert((0, 64, 0), (CAPACITY, CHARGE));
+        step(&mut cells);
+        assert_eq!(cells[&(0, 64, 0)].0, CAPACITY);
     }
 
     #[test]
     fn neighbours_share_and_others_do_not() {
-        let mut cells = BTreeMap::from([((0, 64, 0), 1000), ((1, 64, 0), 0), ((5, 64, 0), 0)]);
+        let mut cells = BTreeMap::from([
+            ((0, 64, 0), (1000, CHARGE)),
+            ((1, 64, 0), (0, CHARGE)),
+            ((5, 64, 0), (0, CHARGE)),
+        ]);
         step(&mut cells);
-        assert_eq!(cells[&(0, 64, 0)], 1005 - FLOW);
-        assert_eq!(cells[&(1, 64, 0)], 5 + FLOW);
-        assert_eq!(cells[&(5, 64, 0)], 5);
-        let total: u64 = cells.values().sum();
+        assert_eq!(cells[&(0, 64, 0)].0, 1005 - FLOW);
+        assert_eq!(cells[&(1, 64, 0)].0, 5 + FLOW);
+        assert_eq!(cells[&(5, 64, 0)].0, 5);
+        let total: u64 = cells.values().map(|e| e.0).sum();
         assert_eq!(total, 1015);
+    }
+
+    #[test]
+    fn cellcore_names_the_first_missing_block() {
+        let missing = multiblocks::Mismatch {
+            x: -1,
+            y: 62,
+            z: -1,
+            expected: "minecraft:iron_block".into(),
+            found: "minecraft:air[axis=y]".into(),
+        };
+        assert_eq!(
+            core_missing(&missing),
+            "needs minecraft:iron_block at -1 62 -1 (minecraft:air[axis=y] there)"
+        );
     }
 }

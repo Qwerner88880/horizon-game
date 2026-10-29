@@ -91,13 +91,58 @@ expect.feedback = "Cell at 0 63 0: 0 in, 4 out"
 command = "cellcore"
 expect.feedback = "needs minecraft:iron_block at -1 62 -1 (minecraft:air there)"
 
+# The ring of iron stands (24 blocks, the ring of each layer): the next
+# check pass sees the core whole and says so, and the cell charges ten
+# times over from then on.
+[[step]]
+blocks = [
+    { x = -1, y = 62, z = -1, state = "minecraft:iron_block" },
+    { x = -1, y = 62, z = 0, state = "minecraft:iron_block" },
+    { x = -1, y = 62, z = 1, state = "minecraft:iron_block" },
+    { x = 0, y = 62, z = -1, state = "minecraft:iron_block" },
+    { x = 0, y = 62, z = 1, state = "minecraft:iron_block" },
+    { x = 1, y = 62, z = -1, state = "minecraft:iron_block" },
+    { x = 1, y = 62, z = 0, state = "minecraft:iron_block" },
+    { x = 1, y = 62, z = 1, state = "minecraft:iron_block" },
+    { x = -1, y = 63, z = -1, state = "minecraft:iron_block" },
+    { x = -1, y = 63, z = 0, state = "minecraft:iron_block" },
+    { x = -1, y = 63, z = 1, state = "minecraft:iron_block" },
+    { x = 0, y = 63, z = -1, state = "minecraft:iron_block" },
+    { x = 0, y = 63, z = 1, state = "minecraft:iron_block" },
+    { x = 1, y = 63, z = -1, state = "minecraft:iron_block" },
+    { x = 1, y = 63, z = 0, state = "minecraft:iron_block" },
+    { x = 1, y = 63, z = 1, state = "minecraft:iron_block" },
+    { x = -1, y = 64, z = -1, state = "minecraft:iron_block" },
+    { x = -1, y = 64, z = 0, state = "minecraft:iron_block" },
+    { x = -1, y = 64, z = 1, state = "minecraft:iron_block" },
+    { x = 0, y = 64, z = -1, state = "minecraft:iron_block" },
+    { x = 0, y = 64, z = 1, state = "minecraft:iron_block" },
+    { x = 1, y = 64, z = -1, state = "minecraft:iron_block" },
+    { x = 1, y = 64, z = 0, state = "minecraft:iron_block" },
+    { x = 1, y = 64, z = 1, state = "minecraft:iron_block" },
+]
+ticks = 21
+expect.broadcast = ["The core at 0 63 0 formed"]
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 350 / 100000 FE"
+
+# Disassembly: break alone — a step's ticks run before its break, so the
+# broadcast would land in the next step — then the pass sees it no longer
+# holds.
+[[step]]
+break = { x = -1, y = 63, z = -1, state = "minecraft:iron_block" }
+
+[[step]]
+ticks = 21
+expect.broadcast = ["The core at 0 63 0 broke"]
+
 # The block a cell stood on is checked at the next tick.
 [[step]]
 break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
 
 [[step]]
 ticks = 1
-expect.broadcast = ["The cell at 0 63 0 is gone with 110 FE"]
+expect.broadcast = ["The cell at 0 63 0 is gone with 1220 FE"]
 
 [[step]]
 command = "cell"
