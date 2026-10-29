@@ -38,9 +38,10 @@ wit_bindgen::generate!({
 });
 
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
+pub use exports::horizon::mods::network_client_events::Guest as __NetClientGuest;
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    browser, chat, command, game, hud, input, log, recipes, render, storage, ui,
+    browser, chat, command, game, hud, input, log, network, recipes, render, storage, ui,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
@@ -68,6 +69,9 @@ pub trait Mod: Sized + 'static {
     /// The player opened the mod's settings page (capability `ui`): call
     /// [`ui::set_settings`] for fresh widgets.
     fn ui_settings_opened(&mut self) {}
+    /// The server half of the mod (the server mod with the same id) sent
+    /// `data` on `channel` (capability `network`).
+    fn network_received(&mut self, _channel: &str, _data: &[u8]) {}
 }
 
 impl Registration {
@@ -152,6 +156,11 @@ macro_rules! export_mod {
                     with(|m| $crate::Mod::chat(m, &text))
                 }
             }
+            impl $crate::__NetClientGuest for Export {
+                fn server_sent(channel: String, data: Vec<u8>) {
+                    with(|m| $crate::Mod::network_received(m, &channel, &data))
+                }
+            }
             impl $crate::__UiEventsGuest for Export {
                 fn select(id: u32, row: u32) {
                     with(|m| $crate::Mod::ui_select(m, id, row))
@@ -191,9 +200,11 @@ pub mod server {
         with: {
             "horizon:mods/log@0.1.0": crate::log,
             "horizon:mods/storage@0.1.0": crate::storage,
+            "horizon:mods/network@0.1.0": crate::network,
         },
     });
 
+    pub use crate::network;
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
     pub use exports::horizon::mods::item_events::{
@@ -201,6 +212,7 @@ pub mod server {
     };
     pub use exports::horizon::mods::menu_events::Guest as __MenuGuest;
     pub use exports::horizon::mods::multiblock_events::{Guest as __MultiblockGuest, Multiblock};
+    pub use exports::horizon::mods::network_events::Guest as __NetGuest;
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
         ServerCommand,
@@ -298,6 +310,10 @@ pub mod server {
         /// change the mod's bytes on the stack with [`item_hooks::stack`]
         /// and [`item_hooks::set_data`].
         fn item_used(&mut self, _player: &Player, _stack: &HeldStack) {}
+        /// The client half of the mod (the client mod with the same id) sent
+        /// `data` on `channel` (capability `network`); answer with
+        /// [`network::send_to`].
+        fn client_message(&mut self, _player: &Player, _channel: &str, _data: &[u8]) {}
         /// The same click with the crosshair on a block, after the block's
         /// own vanilla use passed.
         fn item_used_on_block(
@@ -636,6 +652,11 @@ macro_rules! export_server_mod {
                 }
                 fn broken(block: $crate::server::Multiblock) {
                     with(|m| m.multiblock_broken(&block))
+                }
+            }
+            impl $crate::server::__NetGuest for Export {
+                fn client_sent(player: Player, channel: String, data: Vec<u8>) {
+                    with(|m| m.client_message(&player, &channel, &data))
                 }
             }
             impl $crate::server::__ItemGuest for Export {

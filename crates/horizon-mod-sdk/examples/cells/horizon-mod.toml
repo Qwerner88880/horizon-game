@@ -5,6 +5,6 @@ description = "Every lodestone a player places becomes an energy cell: an energy
 authors = ["Horizon"]
 api = "0.3"
 side = "server"
-capabilities = ["players", "block-entities", "world", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks"]
-experimental = ["block-entities", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks"]
+capabilities = ["players", "block-entities", "world", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks", "network"]
+experimental = ["block-entities", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks", "network"]
 # A placed lodestone becomes a cell that charges each tick; /cell reads it; breaking it says what was lost.

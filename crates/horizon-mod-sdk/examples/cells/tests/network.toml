@@ -1,0 +1,66 @@
+# Capability network: /cellui tells the client half (the cells-ui mod, same id)
+# to open its screen; the client's presses act on the cell the server opened,
+# and the server keeps sending the state while the screen shows.
+
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+# A tick (a step's ticks come before its other parts): the cell has its
+# buffer and charged 5 FE. Message: x y z stored capacity in out.
+[[step]]
+ticks = 1
+command = "cellui"
+expect.net = ["Alex: cells/open=0 63 0 5 100000 0 0"]
+
+[[step]]
+net = { channel = "cells/action", data = "fill" }
+expect.net = ["Alex: cells/state=0 63 0 1005 100000 0 0"]
+
+[[step]]
+net = { channel = "cells/action", data = "drain" }
+expect.net = ["Alex: cells/state=0 63 0 5 100000 0 1"]
+
+# Something the mod does not know, or on another channel: no answer.
+[[step]]
+net = { channel = "cells/action", data = "explode" }
+expect.net = []
+
+[[step]]
+net = { channel = "other/action", data = "fill" }
+expect.net = []
+
+# While the screen shows, the state goes out every 10 ticks (45 more FE).
+[[step]]
+ticks = 9
+expect.net = ["Alex: cells/state=0 63 0 50 100000 0 1"]
+
+# A player who was never shown a cell can't make the server act on one,
+# whatever they send.
+[[step]]
+join = "Bob"
+as = "Bob"
+net = { channel = "cells/action", data = "fill" }
+expect.net = []
+
+# Closing the screen stops the states.
+[[step]]
+net = { channel = "cells/action", data = "close" }
+as = "Alex"
+expect.net = []
+
+[[step]]
+ticks = 10
+expect.net = []
+
+# A cell that goes takes the screen with it: a viewer is told.
+[[step]]
+command = "cellui"
+expect.net = ["Alex: cells/open=0 63 0 100 100000 0 1"]
+
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+expect.net = ["Alex: cells/gone="]

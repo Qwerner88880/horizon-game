@@ -86,6 +86,9 @@ pub(super) struct ModsState {
     pub(super) displays: Vec<super::server_mods::ModDisplay>,
     #[cfg(feature = "mods")]
     pub(super) next_display: i32,
+    /// Capability `network`: the messages each connection sent this tick.
+    #[cfg(feature = "mods")]
+    pub(super) net_counts: std::collections::HashMap<u32, u32>,
     /// Capability `items`: stacks to drop, by dimension, made in that level;
     /// and every item's stack size, for the mods' inventories.
     #[cfg(feature = "mods")]
@@ -301,6 +304,7 @@ impl Game<'_> {
         false
     }
     pub(super) fn mods_chat(&mut self, _line: &str) {}
+    pub(super) fn mod_net_received(&mut self, _data: &[u8]) {}
     pub(super) fn draw_mod_panels(&self, _batch: &mut HudBatch, _corners: &mut Corners) {}
     pub(super) fn open_mod_screen(&mut self, _owner: usize, _settings: bool) {}
     pub(super) fn close_mod_screen(&mut self, _tell: bool) {}
@@ -695,6 +699,39 @@ impl Game<'_> {
         self.mods.mods.chat(line);
         self.show_mod_output();
     }
+    /// A message of a server mod (`horizon_protocol::mod_net`) to the client
+    /// mod with the same id: a payload that breaks the caps is dropped.
+    pub(super) fn mod_net_received(&mut self, data: &[u8]) {
+        match horizon_protocol::mod_net::decode(data) {
+            Ok(m) => {
+                self.mods.mods.net_server_sent(&m.mod_id, &m.name, &m.data);
+                self.show_mod_output();
+            }
+            Err(e) => log::debug!("Horizon: a bad mod message: {e}"),
+        }
+    }
+    /// A client mod's message to its server half: one payload to a server
+    /// that carries them, dropped on any other.
+    fn mod_net_send(&mut self, mod_id: String, channel: String, data: Vec<u8>) {
+        let carries = self.remote.as_ref().is_some_and(|r| r.mod_net);
+        if !carries {
+            log::debug!("Horizon: mod {mod_id}'s message {channel} dropped: no Horizon server");
+            return;
+        }
+        let message = horizon_protocol::mod_net::Message {
+            mod_id,
+            name: channel,
+            data,
+        };
+        if let Ok(data) = horizon_protocol::mod_net::encode(&message) {
+            self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: horizon_protocol::mod_net::CHANNEL.into(),
+                    data,
+                },
+            ));
+        }
+    }
     /// What mods showed: client mods' lines into the chat, server mods'
     /// to their players.
     pub(super) fn show_mod_output(&mut self) {
@@ -745,11 +782,20 @@ impl Game<'_> {
                 | Output::SetBlocks { .. }
                 | Output::OpenMenu { .. }
                 | Output::DropItems { .. }
+                | Output::NetToClient { .. }
                 | Output::SetMenuItems { .. }
                 | Output::CloseMenu { .. }
                 | Output::ShowDisplay { .. }
                 | Output::HideDisplay { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
+                    continue;
+                }
+                Output::NetToServer {
+                    mod_id,
+                    channel,
+                    data,
+                } => {
+                    self.mod_net_send(mod_id, channel, data);
                     continue;
                 }
                 Output::OpenScreen { owner } => {
@@ -1066,10 +1112,17 @@ impl Game<'_> {
                     );
                 }
                 UiWidget::Text(t) => {
+                    // The widget's `color` is 0xRRGGBB (docs: `text-widget`); the
+                    // batch's colours are packed ABGR.
                     let color = if t.color == 0 {
                         u32::MAX
                     } else {
-                        t.color | 0xFF00_0000
+                        horizon_client::hud::rgba(
+                            (t.color >> 16) as u8,
+                            (t.color >> 8) as u8,
+                            t.color as u8,
+                            255,
+                        )
                     };
                     ui::centered_text(
                         batch,

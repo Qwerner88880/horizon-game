@@ -901,6 +901,57 @@ through its full hurt pipeline (mob melee, arrows, PvP) reaching
 `player_hurt`; AoE blows; a cooldown of the mod's; data on stacks that
 split (see above).
 
+#### Network and screens (capability `network`, experimental)
+
+The two halves of one mod talk: a **server mod** and a **client mod** that
+share an id (two files, `side = "server"` and `side = "client"`; turning the
+id on in Options > Mods turns both on, each running where it belongs: the
+client half in the player's game, the server half where the world is). A
+message is bytes on a channel of the mod's own (`cell/state`, `[a-z0-9_./-]`
+up to 64 characters, up to 30,000 bytes); its format is the mod's business.
+With the client half's `ui` widgets this is a real screen, not a chest.
+
+```toml
+# server half                        # client half
+side = "server"                      side = "client"
+api = "0.3"                          api = "0.1"
+capabilities = ["network"]           capabilities = ["ui", "network"]
+experimental = ["network"]           experimental = ["ui", "network"]
+```
+
+- **Server to client.** `network::send_to(player_id, channel, bytes)` in a
+  server mod; the client mod hears it in `Mod::network_received(channel,
+  bytes)`. The player must be a Horizon client (vanilla ones get an error).
+- **Client to server.** `network::send(channel, bytes)` in a client mod; the
+  server mod hears it in `ServerMod::client_message(player, channel, bytes)`,
+  at the end of the server's tick. A player sends at most 32 messages a
+  tick; more are dropped. **The server must not trust what a client sends**:
+  keep what the server showed each player on the server (the `cells`
+  example remembers which cell it opened for them, and ignores any position
+  in a message) and check every request.
+- **Limits.** 64 messages and 256 KiB a call; a message to a vanilla server
+  or from one is simply not sent. Messages travel as one custom payload
+  channel (`horizon:mod_net`) in the play state, announced by the server in
+  configuration, so they need nothing from a vanilla client and work in
+  single player (the window is a client of its own server), on a LAN and
+  on a dedicated server.
+- **A screen.** The client half opens a screen with `ui::open_screen` when a
+  message says so, and calls it again with new widgets for each update (a
+  second call replaces the screen); a button press arrives as
+  `Mod::ui_select(id, 0)` and Esc as `ui_closed`, and the mod sends the
+  press to the server, which decides what it does and answers with the new
+  state. The `cells` example's `/cellui` opens such a screen: a cell's
+  charge as text and a bar, its redstone as an item row, and two buttons.
+  Test scripts have a `net` step (a message of the other half), `select` and
+  `ui-close` (a press, Esc), and `expect.net` and `expect.screen`.
+
+**Not yet.** Telling whether a player's client has the mod's half (a screen
+opened for one without it just doesn't show: `/cellgui`'s chest menu is the
+fallback); the half running in in-frame single player (the server mod and
+its client half would share an id in one game); screens beyond the `ui`
+widgets (text, buttons, item rows, lists: no free layout, textures or
+sliders); mod messages through a proxy that drops unknown payloads.
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is

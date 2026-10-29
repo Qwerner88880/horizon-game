@@ -1,0 +1,69 @@
+# The client half of the cells mod: the server's messages become a screen,
+# and the player's presses go back as messages.
+
+# The server opens the screen: 25,000 of 100,000 FE, a dust waiting, none made.
+[[step]]
+net = { channel = "cells/open", data = "0 64 0 25000 100000 1 0" }
+expect.screen = [
+    "# Energy Cell 0 64 0",
+    "25000 / 100000 FE",
+    "[||........] 25%",
+    "minecraft:redstone: 1 waiting, 0 made",
+    "[Fill 1000 FE]",
+    "[Drain 1000 FE into redstone]",
+]
+
+# A new state replaces the numbers on the open screen.
+[[step]]
+net = { channel = "cells/state", data = "0 64 0 80000 100000 0 4" }
+expect.screen = [
+    "# Energy Cell 0 64 0",
+    "80000 / 100000 FE",
+    "[||||||||..] 80%",
+    "minecraft:redstone: 0 waiting, 4 made",
+    "[Fill 1000 FE]",
+    "[Drain 1000 FE into redstone]",
+]
+
+# The buttons ask the server; they change nothing here.
+[[step]]
+select = { id = 1 }
+expect.net = ["cells/action=fill"]
+
+[[step]]
+select = { id = 2 }
+expect.net = ["cells/action=drain"]
+
+# Anything that isn't one of the screen's buttons is ignored.
+[[step]]
+select = { id = 99 }
+expect.net = []
+
+# A message that isn't a state is ignored, and the screen stays.
+[[step]]
+net = { channel = "cells/state", data = "garbage" }
+expect.screen = [
+    "# Energy Cell 0 64 0",
+    "80000 / 100000 FE",
+    "[||||||||..] 80%",
+    "minecraft:redstone: 0 waiting, 4 made",
+    "[Fill 1000 FE]",
+    "[Drain 1000 FE into redstone]",
+]
+
+# Leaving the screen tells the server, and a late state is not drawn again.
+[[step]]
+ui-close = true
+expect.net = ["cells/action=close"]
+
+[[step]]
+net = { channel = "cells/state", data = "0 64 0 1 100000 0 0" }
+expect.net = []
+expect.screen = [
+    "# Energy Cell 0 64 0",
+    "80000 / 100000 FE",
+    "[||||||||..] 80%",
+    "minecraft:redstone: 0 waiting, 4 made",
+    "[Fill 1000 FE]",
+    "[Drain 1000 FE into redstone]",
+]

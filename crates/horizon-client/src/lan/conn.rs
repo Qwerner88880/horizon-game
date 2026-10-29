@@ -843,6 +843,14 @@ fn login_and_configure(
                 data: Vec::new(),
             }),
         )?;
+        // And that it carries its mods' messages (horizon_protocol::mod_net).
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: horizon_protocol::mod_net::CHANNEL.into(),
+                data: Vec::new(),
+            }),
+        )?;
     }
     for packet in sync.registry_packets(known_pack) {
         send(c, cfg::Clientbound::RegistryData(packet))?;

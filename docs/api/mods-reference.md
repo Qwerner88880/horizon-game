@@ -28,6 +28,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `multiblocks` | [`multiblocks`](#multiblocks) | keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break |
 | `saved-data` | [`saved-data`](#saved-data) | keep data of its own on the world, saved with the world |
 | `item-hooks` | [`item-hooks`](#item-hooks) | act on the items it claims: their use and their blow, each tick held or worn, and data of its own on each stack |
+| `network` | [`network`](#network) | send messages to the other half of the mod, on the server or on your game, and hear its messages |
 
 ## World `horizon-mod`
 
@@ -47,8 +48,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `server-events`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -106,12 +107,26 @@ The game's side of capability `item-hooks`: a world of its own, so server mods b
 - Imports (what the game offers): `players`, `item-hooks`
 - Exports (what the mod provides): `item-events`
 
+## World `net-server-host`
+
+The game's side of capability `network` for server mods: a world of its own, so server mods built before it (no `network-events` export) still load.
+
+- Imports (what the game offers): `players`, `network`
+- Exports (what the mod provides): `network-events`
+
+## World `net-client-host`
+
+The game's side of capability `network` for client mods: a world of its own, so client mods built before it still load.
+
+- Imports (what the game offers): `network`
+- Exports (what the mod provides): `network-client-events`
+
 ## World `horizon-ui-mod`
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`
-- Exports (what the mod provides): `ui-events`, `events`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `network`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Exports (what the mod provides): `ui-events`, `network-client-events`, `events`
 
 ## World `ui-host`
 
@@ -1205,3 +1220,38 @@ An argument's value, parsed as its kind says.
 | `command` | `func(player: player, name: string, args: string, values: list<tuple<string, argument-value>>) -> result<option<string>, string>` | `/name args` typed by `player`: ok(some(text)) is their feedback, err(text) their error in red. `values` holds each argument given, by name, in order (an optional one left out isn't there); a line that doesn't parse never reaches the mod: the player gets vanilla's error. |
 | `block-broken` | `func(player: player, pos: block-pos, state: string)` | A player broke the block at `pos` in their dimension: `state` is what was there, as `minecraft:oak_log[axis=y]`. |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
+
+## `network`
+
+Access: capability `network`.
+
+Capability `network`, for server mods (manifest `api = "0.3"`) and client mods alike (experimental): bytes the two halves of one mod send each other. A mod's server half and its client half share the mod's id (two files, `side = "server"` and `side = "client"`): a message names the id, so it reaches the half with that id on the other side, and only that one. Channels are the mod's own names (`cell/state`), its bytes its own format. The client half reaches a Horizon server only: vanilla ones and vanilla clients are skipped, and a send to them is an error.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `send-to` | `func(player: string, channel: string, data: list<u8>) -> result<_, string>` | Server mods: sends `data` on channel `channel` (`[a-z0-9_./-]{1,64}`, up to 30,000 bytes) to the player with this id. An error for a player not on the server or one that isn't a Horizon client, a channel or size outside the rules, or past 64 messages (256 KiB) in one call. Client mods get an error here. |
+| `send` | `func(channel: string, data: list<u8>) -> result<_, string>` | Client mods: sends the same to the server half of the mod. An error when the server isn't a Horizon one that carries mod messages, or the same limits. Server mods get an error here. |
+
+## `network-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `network`. A server mod built before it has no such export and keeps working.
+
+### type `player`
+
+`type player = player`
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `client-sent` | `func(player: player, channel: string, data: list<u8>)` | The client half of the mod sent `data` on `channel`: the player as the server saw them. A player sends at most 32 messages a tick; more are dropped. |
+
+## `network-client-events`
+
+Access: exported by the mod: the game calls it.
+
+What the game calls in a client mod with capability `network`.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `server-sent` | `func(channel: string, data: list<u8>)` | The server half of the mod sent `data` on `channel`. |

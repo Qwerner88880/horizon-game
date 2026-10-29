@@ -111,6 +111,8 @@ pub(super) struct Remote {
     pub brand: String,
     /// The server announced it runs mods' quiet commands.
     pub quiet_commands: bool,
+    /// The server announced it carries mod messages.
+    pub mod_net: bool,
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
@@ -449,6 +451,7 @@ impl Game<'_> {
             session,
             brand: "unknown".into(),
             quiet_commands: false,
+            mod_net: false,
             builtin: Arc::new(builtin),
             lang,
             registries: Arc::new(Dynamic::default()),
@@ -883,6 +886,11 @@ impl Game<'_> {
                 Event::QuietCommands => {
                     if let Some(remote) = &mut self.remote {
                         remote.quiet_commands = true;
+                    }
+                }
+                Event::ModNet => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.mod_net = true;
                     }
                 }
                 Event::Reconfigured(registries) => {
@@ -1719,6 +1727,10 @@ impl Game<'_> {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
             C::Ping(p) => self.send(S::Pong(p)),
+            // A message of a server mod to its client half.
+            C::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
+                self.mod_net_received(&p.data);
+            }
             // PingDebugMonitor.onPongReceived.
             C::PongResponse(p) => {
                 let delay = self.debug_millis() - p.time;

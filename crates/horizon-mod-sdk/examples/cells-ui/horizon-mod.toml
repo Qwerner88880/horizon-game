@@ -1,0 +1,9 @@
+id = "cells"
+name = "Energy Cells screen"
+version = "0.1.0"
+description = "The client half of Energy Cells: /cellui on the server opens a screen with a cell's charge, a bar and buttons to fill and drain it. It shares its id with the server half, so turning one on turns on both."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["ui", "network"]
+experimental = ["ui", "network"]

@@ -65,6 +65,8 @@ pub(super) enum ModEvent {
     /// A player used a block a mod takes the use of: the mod, the position
     /// and the block.
     BlockUse(Who, String, [i32; 3], String),
+    /// A message of a mod's client half: the mod, the channel and the bytes.
+    NetFromClient(Who, String, String, Vec<u8>),
     /// A player used (right-clicked) an item a mod takes the behaviour of
     /// (capability `item-hooks`): the mod, the stack as the mod's
     /// inventories keep it, and the block under the crosshair if there was
@@ -111,6 +113,7 @@ impl Game<'_> {
     pub(super) fn mod_block_use(&mut self, _pos: [i32; 3]) -> bool {
         false
     }
+    pub(super) fn guest_mod_net(&mut self, _conn: u32, _data: &[u8]) {}
     pub(in crate::game) fn mod_item_use(&mut self, _block_hit: Option<&super::Hit>) -> bool {
         false
     }
@@ -152,6 +155,9 @@ mod run {
         Transform, items::Stack,
     };
     use horizon_protocol::entity_data::{Value as Data, serializer};
+
+    /// Messages a player may send to the mods in one tick.
+    const NET_PER_TICK: u32 = 32;
 
     /// Mods' display entities take ids from here up, past the world's.
     const FIRST_DISPLAY_ID: i32 = 0x6000_0000;
@@ -906,6 +912,11 @@ mod run {
                             self.mods.mods.menu_closed(&mod_id, &p, &menu);
                         }
                     }
+                    ModEvent::NetFromClient(w, mod_id, channel, data) => {
+                        if let Some(p) = who(&w) {
+                            self.mods.mods.net_client_sent(&mod_id, &p, &channel, &data);
+                        }
+                    }
                     ModEvent::BlockUse(w, mod_id, pos, state) => {
                         if let Some(p) = who(&w) {
                             let dimension = p.dimension.clone();
@@ -958,6 +969,7 @@ mod run {
                     self.mods.mods.menu_closed(&m.mod_id, p, &m.menu);
                 }
             }
+            self.mods.net_counts.clear();
             self.mods.mods.server_tick(self.ticks);
             self.mods.mods.block_entity_tick(self.ticks);
             self.mod_items_tick(&players);
@@ -1513,6 +1525,29 @@ mod run {
             true
         }
 
+        /// A mod message a connection's player sent (`horizon_protocol::mod_net`):
+        /// the mod with the id it names hears it at the tick's end. A player
+        /// sends at most [`NET_PER_TICK`] a tick, and what breaks a cap or
+        /// names no running mod that listens is dropped.
+        pub(in crate::game) fn guest_mod_net(&mut self, conn: u32, data: &[u8]) {
+            if !self.hears_players() {
+                return;
+            }
+            let Ok(m) = horizon_protocol::mod_net::decode(data) else {
+                return;
+            };
+            if !self.mods.mods.hears_net(&m.mod_id) {
+                return;
+            }
+            let count = self.mods.net_counts.entry(conn).or_default();
+            if *count >= NET_PER_TICK {
+                return;
+            }
+            *count += 1;
+            let event = ModEvent::NetFromClient(Who::Conn(conn), m.mod_id, m.name, m.data);
+            self.mods.events.push(event);
+        }
+
         /// The acting player uses the block at `pos` with the main hand: true
         /// when a server mod takes the use of it (the mod hears it at the
         /// tick's end, and the game does nothing else with the click).
@@ -1675,6 +1710,42 @@ mod run {
                     for p in self.server_players(host.as_deref()) {
                         let line = named(&name, text.clone());
                         self.tell_server_player(host.as_deref_mut(), &p.id, line);
+                    }
+                }
+                Output::NetToClient {
+                    mod_id,
+                    player,
+                    channel,
+                    data,
+                } => {
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    let Some(conn) = Self::conn_of(host, &player) else {
+                        return;
+                    };
+                    // Only Horizon clients carry them (the others would
+                    // ignore the channel, but need not be sent it).
+                    let horizon = host
+                        .hub
+                        .guests
+                        .iter()
+                        .any(|g| g.conn == conn && g.brand == "horizon");
+                    let message = horizon_protocol::mod_net::Message {
+                        mod_id,
+                        name: channel,
+                        data,
+                    };
+                    if horizon && let Ok(data) = horizon_protocol::mod_net::encode(&message) {
+                        host.hub.send_to(
+                            conn,
+                            &C::CustomPayload(
+                                horizon_protocol::packets::configuration::CustomPayload {
+                                    channel: horizon_protocol::mod_net::CHANNEL.into(),
+                                    data,
+                                },
+                            ),
+                        );
                     }
                 }
                 Output::OpenMenu {

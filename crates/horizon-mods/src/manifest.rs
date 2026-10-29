@@ -128,9 +128,12 @@ pub enum Capability {
     /// each tick held or worn, and bytes of its own on each stack (server
     /// mods).
     ItemHooks,
+    /// Messages between the two halves of one mod, the server's and the
+    /// player's game (server mods and client mods).
+    Network,
 }
 impl Capability {
-    pub const ALL: [Capability; 21] = [
+    pub const ALL: [Capability; 22] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -152,7 +155,13 @@ impl Capability {
         Capability::Multiblocks,
         Capability::SavedData,
         Capability::ItemHooks,
+        Capability::Network,
     ];
+    /// Whether a mod of either side may have it, as a server mod's `storage`
+    /// is also a client mod's.
+    pub fn both_sides(self) -> bool {
+        matches!(self, Capability::Storage | Capability::Network)
+    }
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
         matches!(
@@ -169,6 +178,7 @@ impl Capability {
                 | Capability::Multiblocks
                 | Capability::SavedData
                 | Capability::ItemHooks
+                | Capability::Network
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -195,6 +205,7 @@ impl Capability {
             Capability::Multiblocks => "multiblocks",
             Capability::SavedData => "saved-data",
             Capability::ItemHooks => "item-hooks",
+            Capability::Network => "network",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -215,6 +226,7 @@ impl Capability {
                 | Capability::Multiblocks
                 | Capability::SavedData
                 | Capability::ItemHooks
+                | Capability::Network
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -252,6 +264,9 @@ impl Capability {
             Capability::SavedData => "keep data of its own on the world, saved with the world",
             Capability::ItemHooks => {
                 "act on the items it claims: their use and their blow, each tick held or worn, and data of its own on each stack"
+            }
+            Capability::Network => {
+                "send messages to the other half of the mod, on the server or on your game, and hear its messages"
             }
         }
     }
@@ -303,6 +318,7 @@ impl fmt::Display for Capability {
             Capability::Multiblocks => "multiblocks",
             Capability::SavedData => "saved-data",
             Capability::ItemHooks => "item-hooks",
+            Capability::Network => "network",
         };
         f.write_str(name)
     }
@@ -342,7 +358,7 @@ impl Manifest {
         if let Some(c) = m
             .capabilities
             .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
+            .find(|c| c.on_server() != server && !c.both_sides())
         {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));

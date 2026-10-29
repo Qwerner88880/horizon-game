@@ -32,7 +32,7 @@ use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, Multiblock,
     Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, Stack, Transform, UsedBlock,
     block_entities, displays, energy, item_hooks, items, machine_recipes, menus, multiblocks,
-    players, saved_data,
+    network, players, saved_data,
 };
 use std::collections::BTreeMap;
 
@@ -50,6 +50,10 @@ const FLOW: u64 = 100;
 #[derive(Default)]
 struct Cells {
     open: BTreeMap<String, (String, i32, i32, i32)>,
+    /// The cell each player's screen shows (capability `network`, the
+    /// `cells` client mod's screen), by player id: what a player's messages
+    /// act on, whatever position they name.
+    screens: BTreeMap<String, (String, i32, i32, i32)>,
     /// The anchors whose core stands (capability `multiblocks`), by place.
     cores: std::collections::BTreeSet<(String, i32, i32, i32)>,
     /// The mod's grinding recipes, read once in `init` (capability
@@ -155,6 +159,35 @@ fn view(stored: u64) -> Vec<MenuItem> {
         ),
         MenuItem::new(CLOSE, "minecraft:barrier", 1).named("Close", &[]),
     ]
+}
+
+/// Turns `STEP` energy into a redstone dust in the cell's output slot, when
+/// there is the energy and room: the energy left.
+fn drain(d: &str, x: i32, y: i32, z: i32) -> Option<u64> {
+    let now = stored(d, x, y, z);
+    let made = count(d, x, y, z, OUTPUT);
+    if now < STEP || made >= 64 {
+        return None;
+    }
+    let dust = Stack {
+        item: REDSTONE.into(),
+        count: made + 1,
+        components: String::new(),
+    };
+    items::set(d, x, y, z, OUTPUT, Some(&dust)).ok()?;
+    let next = now - STEP;
+    let _ = energy::set_stored(d, x, y, z, next);
+    Some(next)
+}
+
+/// What the cell screen shows, as a message: `x y z stored capacity in out`.
+fn screen_state(d: &str, x: i32, y: i32, z: i32) -> String {
+    format!(
+        "{x} {y} {z} {} {CAPACITY} {} {}",
+        stored(d, x, y, z),
+        count(d, x, y, z, INPUT),
+        count(d, x, y, z, OUTPUT)
+    )
 }
 
 /// The block under `player`, or `pos`.
@@ -464,8 +497,10 @@ impl ServerMod for Cells {
                 ..Cells::default()
             },
             Registration::new()
+                .on_joins()
                 .command_with("cell", [Argument::block_pos("pos").optional()])
                 .command_with("cellgui", [Argument::block_pos("pos").optional()])
+                .command_with("cellui", [Argument::block_pos("pos").optional()])
                 .command_with("cellitems", [Argument::block_pos("pos").optional()])
                 .command_with("cellcore", [Argument::block_pos("pos").optional()])
                 .command_with("cellnet", [Argument::word("name").optional()])
@@ -559,6 +594,10 @@ impl ServerMod for Cells {
             for (player, (d, x, y, z)) in &self.open {
                 let _ = menus::set_items(player, "cell", &view(stored(d, *x, *y, *z)));
             }
+            for (player, (d, x, y, z)) in &self.screens {
+                let state = screen_state(d, *x, *y, *z);
+                let _ = network::send_to(player, "cells/state", state.as_bytes());
+            }
             let degrees = (tick / REFRESH) as f32 * TURN % 360.0;
             for e in entities {
                 let (d, x, y, z) = (&e.dimension, e.x, e.y, e.z);
@@ -605,6 +644,17 @@ impl ServerMod for Cells {
         for p in watching {
             self.open.remove(&p);
             menus::close(&p);
+        }
+        // A screen of the cell closes with it.
+        let viewers: Vec<String> = self
+            .screens
+            .iter()
+            .filter(|(_, at)| **at == here)
+            .map(|(p, _)| p.clone())
+            .collect();
+        for p in viewers {
+            self.screens.remove(&p);
+            let _ = network::send_to(&p, "cells/gone", b"");
         }
         let lost = stored(&entity.dimension, entity.x, entity.y, entity.z);
         if lost > 0 {
@@ -692,6 +742,23 @@ impl ServerMod for Cells {
         if name == "cellgui" {
             self.open_menu(player, d, x, y, z)?;
             return Ok(None);
+        }
+        if name == "cellui" {
+            // The real screen (capability `network`): the client half draws
+            // it from this state, and answers with what the player presses.
+            // A client without it hears the message and shows nothing.
+            network::send_to(
+                &player.id,
+                "cells/open",
+                screen_state(d, x, y, z).as_bytes(),
+            )
+            .map_err(|e| {
+                format!(
+                    "{e}: the cell screen needs the Cells client mod; /cellgui is the chest menu"
+                )
+            })?;
+            self.screens.insert(player.id.clone(), (d.clone(), x, y, z));
+            return Ok(Some("Opening the cell screen".into()));
         }
         if name == "cellitems" {
             let (i, o) = (count(d, x, y, z, INPUT), count(d, x, y, z, OUTPUT));
@@ -861,19 +928,10 @@ impl ServerMod for Cells {
         };
         let now = stored(&d, x, y, z);
         let next = match slot {
-            DRAIN => {
-                let made = count(&d, x, y, z, OUTPUT);
-                if now < STEP || made >= 64 {
-                    return;
-                }
-                let dust = Stack {
-                    item: REDSTONE.into(),
-                    count: made + 1,
-                    components: String::new(),
-                };
-                let _ = items::set(&d, x, y, z, OUTPUT, Some(&dust));
-                now - STEP
-            }
+            DRAIN => match drain(&d, x, y, z) {
+                Some(next) => next,
+                None => return,
+            },
             FILL => (now + STEP).min(CAPACITY),
             LOAD => {
                 // A demo button, like Fill making energy: a cobblestone in
@@ -899,6 +957,40 @@ impl ServerMod for Cells {
 
     fn menu_closed(&mut self, player: &Player, _menu: &str) {
         self.open.remove(&player.id);
+    }
+
+    /// What the cell screen's buttons send (channel `cells/action`): `fill`,
+    /// `drain` or `close`, acting on the cell the screen shows. Nothing the
+    /// client names is trusted: the cell is the one the server opened for
+    /// the player.
+    fn client_message(&mut self, player: &Player, channel: &str, data: &[u8]) {
+        if channel != "cells/action" {
+            return;
+        }
+        let Some((d, x, y, z)) = self.screens.get(&player.id).cloned() else {
+            return;
+        };
+        match data {
+            b"close" => {
+                self.screens.remove(&player.id);
+                return;
+            }
+            b"fill" => {
+                let now = stored(&d, x, y, z);
+                let _ = energy::set_stored(&d, x, y, z, (now + STEP).min(CAPACITY));
+            }
+            b"drain" => {
+                drain(&d, x, y, z);
+            }
+            _ => return,
+        }
+        let state = screen_state(&d, x, y, z);
+        let _ = network::send_to(&player.id, "cells/state", state.as_bytes());
+    }
+
+    fn player_left(&mut self, player: &Player) {
+        self.open.remove(&player.id);
+        self.screens.remove(&player.id);
     }
 }
 

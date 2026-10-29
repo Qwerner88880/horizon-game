@@ -513,6 +513,55 @@ impl TestGame {
             )),
         }
     }
+    /// The client half sends `data` on `channel` (capability `network`): a
+    /// server mod hears it from `player`.
+    pub fn net_from_client(&mut self, player: &ServerPlayer, channel: &str, data: &[u8]) {
+        self.snapshot();
+        if let Some(id) = self.mod_id() {
+            self.mods.net_client_sent(&id, player, channel, data);
+        }
+    }
+    /// The server half sends `data` on `channel`: a client mod hears it.
+    pub fn net_from_server(&mut self, channel: &str, data: &[u8]) {
+        self.snapshot();
+        if let Some(id) = self.mod_id() {
+            self.mods.net_server_sent(&id, channel, data);
+        }
+    }
+    /// The player picks `row` of the mod's widget `id` (a button is row 0):
+    /// a client mod's `ui-events::select`.
+    pub fn ui_select(&mut self, id: u32, row: u32) {
+        self.snapshot();
+        self.mods.ui_select(0, id, row);
+    }
+    /// The player leaves the mod's screen (Esc or Done).
+    pub fn ui_closed(&mut self) {
+        self.snapshot();
+        self.mods.ui_closed(0);
+    }
+    /// The mod's screen as lines: `# title`, then each widget (text as is,
+    /// `[label]` for a button, `item: name` for an item, `rows` for a
+    /// list), `None` while no screen is open.
+    pub fn screen_lines(&self) -> Option<Vec<String>> {
+        use crate::UiWidget;
+        let screen = self.mods.screen(0)?;
+        let mut lines = vec![format!("# {}", screen.title)];
+        for w in &screen.widgets {
+            lines.push(match w {
+                UiWidget::Text(t) => t.text.clone(),
+                UiWidget::Button(b) => format!("[{}]", b.label),
+                UiWidget::Item(i) => format!("{}: {}", i.item, i.name),
+                UiWidget::List(l) => l.rows.join(" | "),
+            });
+        }
+        Some(lines)
+    }
+    fn mod_id(&self) -> Option<String> {
+        self.mods.entries()[0]
+            .manifest
+            .as_ref()
+            .map(|m| m.id.clone())
+    }
     /// `player` clicks slot `slot` of the mod's menu `menu` (capability
     /// `menus`).
     pub fn menu_click(
@@ -681,6 +730,24 @@ impl From<Mode> for GameMode {
     }
 }
 
+/// A press of one of the mod's widgets (`ui-events::select`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectSet {
+    id: u32,
+    #[serde(default)]
+    row: u32,
+}
+
+/// A message of the other half of the mod: `data` is text, sent as its bytes.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetSet {
+    channel: String,
+    #[serde(default)]
+    data: String,
+}
+
 /// A block a player breaks or places.
 /// A click in the mod's menu (capability `menus`).
 #[derive(Debug, Deserialize)]
@@ -803,6 +870,15 @@ pub struct Step {
     use_item: Option<UseItemSet>,
     attack: Option<AttackSet>,
     hurt: Option<HurtSet>,
+    /// A message of the other half of the mod (capability `network`): the
+    /// player's client half for a server mod, the server half for a client
+    /// mod. Before `command`.
+    net: Option<NetSet>,
+    /// Client mods: the player presses a widget of the mod's screen, or
+    /// leaves the screen. After `net`, before `command`.
+    select: Option<SelectSet>,
+    #[serde(default)]
+    ui_close: bool,
     /// Blocks of the Overworld before the rest of the step (capability
     /// `world`); every other block is air.
     #[serde(default)]
@@ -822,6 +898,12 @@ pub struct Expect {
     /// The command's feedback, and its red error.
     feedback: Option<String>,
     error: Option<String>,
+    /// Every message the mod sent (capability `network`) as `channel=text`,
+    /// for a server mod `Name: channel=text` (the bytes as UTF-8, lossily).
+    net: Option<Vec<String>>,
+    /// The mod's screen after the step, as [`TestGame::screen_lines`]
+    /// shows it; `[]` for no screen open.
+    screen: Option<Vec<String>>,
     /// Server mods: every `players.tell` as `"Name: text"`, and every
     /// `players.broadcast`, in order.
     told: Option<Vec<String>>,
@@ -911,6 +993,15 @@ impl Step {
         if let Some(line) = &self.command {
             parts.push(format!("/{line}"));
         }
+        if let Some(n) = &self.net {
+            parts.push(format!("net {}", n.channel));
+        }
+        if let Some(s) = &self.select {
+            parts.push(format!("select widget {}", s.id));
+        }
+        if self.ui_close {
+            parts.push("closes the screen".to_string());
+        }
         if let Some(hold) = &self.hold {
             parts.push(format!("holds {} x{}", hold.item, hold.count));
         }
@@ -982,6 +1073,7 @@ impl Step {
             || self.broken.is_some()
             || self.place.is_some()
             || self.click.is_some()
+            || (self.net.is_some() && server)
             || self.used.is_some()
             || self.hold.is_some()
             || self.use_item.is_some()
@@ -1057,6 +1149,18 @@ impl Step {
         }
         if let (Some(c), Some(p)) = (&self.click, &who) {
             game.menu_click(p, &c.menu, c.slot, c.button, c.shift);
+        }
+        if let Some(n) = &self.net {
+            match &who {
+                Some(p) => game.net_from_client(p, &n.channel, n.data.as_bytes()),
+                None => game.net_from_server(&n.channel, n.data.as_bytes()),
+            }
+        }
+        if let Some(s) = &self.select {
+            game.ui_select(s.id, s.row);
+        }
+        if self.ui_close {
+            game.ui_closed();
         }
         let owned = self.command.as_ref().map(|line| match &who {
             Some(p) => game.player_command(p, line),
@@ -1167,6 +1271,36 @@ impl Step {
                 _ => None,
             })
         };
+        if let Some(want) = &e.screen {
+            let got = game.screen_lines().unwrap_or_default();
+            same("screen", want, &got)?;
+        }
+        if let Some(want) = &e.net {
+            let name = |id: &str| {
+                let p = game.players.iter().find(|p| p.id == id);
+                p.map_or(id.to_owned(), |p| p.name.clone())
+            };
+            let got: Vec<String> = out
+                .iter()
+                .filter_map(|o| match o {
+                    Output::NetToClient {
+                        player,
+                        channel,
+                        data,
+                        ..
+                    } => Some(format!(
+                        "{}: {channel}={}",
+                        name(player),
+                        String::from_utf8_lossy(data)
+                    )),
+                    Output::NetToServer { channel, data, .. } => {
+                        Some(format!("{channel}={}", String::from_utf8_lossy(data)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            same("net", want, &got)?;
+        }
         if let Some(want) = &e.told {
             let name = |id: &str| {
                 let p = game.players.iter().find(|p| p.id == id);

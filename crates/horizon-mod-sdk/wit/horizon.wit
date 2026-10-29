@@ -1283,6 +1283,43 @@ world horizon-server-mod {
     export server-events;
 }
 
+/// Capability `network`, for server mods (manifest `api = "0.3"`) and client
+/// mods alike (experimental): bytes the two halves of one mod send each
+/// other. A mod's server half and its client half share the mod's id (two
+/// files, `side = "server"` and `side = "client"`): a message names the id,
+/// so it reaches the half with that id on the other side, and only that
+/// one. Channels are the mod's own names (`cell/state`), its bytes its own
+/// format. The client half reaches a Horizon server only: vanilla ones and
+/// vanilla clients are skipped, and a send to them is an error.
+interface network {
+    /// Server mods: sends `data` on channel `channel` (`[a-z0-9_./-]{1,64}`,
+    /// up to 30,000 bytes) to the player with this id. An error for a player
+    /// not on the server or one that isn't a Horizon client, a channel or
+    /// size outside the rules, or past 64 messages (256 KiB) in one call.
+    /// Client mods get an error here.
+    send-to: func(player: string, channel: string, data: list<u8>) -> result<_, string>;
+    /// Client mods: sends the same to the server half of the mod. An error
+    /// when the server isn't a Horizon one that carries mod messages, or the
+    /// same limits. Server mods get an error here.
+    send: func(channel: string, data: list<u8>) -> result<_, string>;
+}
+
+/// What the server calls in a server mod with capability `network`. A server
+/// mod built before it has no such export and keeps working.
+interface network-events {
+    use players.{player};
+    /// The client half of the mod sent `data` on `channel`: the player as the
+    /// server saw them. A player sends at most 32 messages a tick; more are
+    /// dropped.
+    client-sent: func(player: player, channel: string, data: list<u8>);
+}
+
+/// What the game calls in a client mod with capability `network`.
+interface network-client-events {
+    /// The server half of the mod sent `data` on `channel`.
+    server-sent: func(channel: string, data: list<u8>);
+}
+
 /// A server mod with block entities (capability `block-entities`): the SDK
 /// builds every server mod against this world. Mods built for
 /// `horizon-server-mod` alone still load and simply keep none.
@@ -1297,11 +1334,13 @@ world horizon-block-mod {
     import multiblocks;
     import saved-data;
     import item-hooks;
+    import network;
     export block-entity-events;
     export menu-events;
     export block-use-events;
     export multiblock-events;
     export item-events;
+    export network-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -1357,6 +1396,22 @@ world item-host {
     export item-events;
 }
 
+/// The game's side of capability `network` for server mods: a world of its
+/// own, so server mods built before it (no `network-events` export) still
+/// load.
+world net-server-host {
+    import players;
+    import network;
+    export network-events;
+}
+
+/// The game's side of capability `network` for client mods: a world of its
+/// own, so client mods built before it still load.
+world net-client-host {
+    import network;
+    export network-client-events;
+}
+
 /// A mod with widgets (capability `ui`): the SDK builds every mod against
 /// this world. Mods built for `horizon-mod` alone (no `ui-events` export)
 /// still load and simply hear nothing of their widgets.
@@ -1367,7 +1422,9 @@ world horizon-ui-mod {
     import input;
     import recipes;
     import browser;
+    import network;
     export ui-events;
+    export network-client-events;
 }
 
 /// The game's side of `horizon-ui-mod` beyond `horizon-mod`.
