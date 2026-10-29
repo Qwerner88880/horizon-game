@@ -196,6 +196,9 @@ pub mod server {
 
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
+    pub use exports::horizon::mods::item_events::{
+        Entity, Guest as __ItemGuest, PlayerStack, UsedBlock as ItemUsedBlock,
+    };
     pub use exports::horizon::mods::menu_events::Guest as __MenuGuest;
     pub use exports::horizon::mods::multiblock_events::{Guest as __MultiblockGuest, Multiblock};
     pub use exports::horizon::mods::server_events::{
@@ -205,6 +208,7 @@ pub mod server {
     pub use horizon::mods::block_entities;
     pub use horizon::mods::displays::{self, Shape, Transform};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
+    pub use horizon::mods::item_hooks::{self, HeldStack};
     pub use horizon::mods::items::{self, Stack};
     pub use horizon::mods::machine_recipes;
     pub use horizon::mods::menus::{self, MenuItem, MenuSlot, SlotMode};
@@ -283,6 +287,54 @@ pub mod server {
         /// block went: its last data, as [`ServerMod::block_entity_removed`]
         /// gets.
         fn multiblock_broken(&mut self, _block: &Multiblock) {}
+        /// Capability `item-hooks`: the items (`minecraft:blaze_rod`, a
+        /// content mod's `mymod:wrench`) whose behaviour this mod takes.
+        /// Asked once, after [`ServerMod::init`].
+        fn item_hooks_items() -> Vec<String> {
+            Vec::new()
+        }
+        /// `player` used one of those items in the main hand, with nothing
+        /// to use it on; the game does nothing else with the click. Read and
+        /// change the mod's bytes on the stack with [`item_hooks::stack`]
+        /// and [`item_hooks::set_data`].
+        fn item_used(&mut self, _player: &Player, _stack: &HeldStack) {}
+        /// The same click with the crosshair on a block, after the block's
+        /// own vanilla use passed.
+        fn item_used_on_block(
+            &mut self,
+            _player: &Player,
+            _stack: &HeldStack,
+            _block: &ItemUsedBlock,
+        ) {
+        }
+        /// Each server tick, after [`ServerMod::block_entity_tick`]: every
+        /// claimed stack of every online player, held or worn (armour's
+        /// slots: 36 feet, 37 legs, 38 chest, 39 head).
+        fn inventory_tick(&mut self, _tick: u64, _held: &[PlayerStack]) {}
+        /// A blow with a claimed item in the main hand: answer with the
+        /// damage to deal instead, 0 to cancel it (the same damage changes
+        /// nothing). Only the number changes; an error cancels nothing.
+        fn hurt_entity(
+            &mut self,
+            _player: &Player,
+            _stack: &HeldStack,
+            _entity: &Entity,
+            _damage: f32,
+        ) -> Result<f32, String> {
+            Ok(_damage)
+        }
+        /// `player` hurt while wearing a claimed item: answer with how much
+        /// of the damage the armour takes (0 to the damage); what it takes
+        /// is gone, the rest hurts as vanilla has it. An error takes
+        /// nothing.
+        fn player_hurt(
+            &mut self,
+            _player: &Player,
+            _damage: f32,
+            _source: &str,
+        ) -> Result<f32, String> {
+            Ok(0.0)
+        }
     }
 
     impl Transform {
@@ -584,6 +636,39 @@ macro_rules! export_server_mod {
                 }
                 fn broken(block: $crate::server::Multiblock) {
                     with(|m| m.multiblock_broken(&block))
+                }
+            }
+            impl $crate::server::__ItemGuest for Export {
+                fn items() -> Vec<String> {
+                    <$t as ServerMod>::item_hooks_items()
+                }
+                fn used(player: Player, stack: $crate::server::HeldStack) {
+                    with(|m| m.item_used(&player, &stack))
+                }
+                fn used_on_block(
+                    player: Player,
+                    stack: $crate::server::HeldStack,
+                    block: $crate::server::ItemUsedBlock,
+                ) {
+                    with(|m| m.item_used_on_block(&player, &stack, &block))
+                }
+                fn inventory_tick(tick: u64, held: Vec<$crate::server::PlayerStack>) {
+                    with(|m| m.inventory_tick(tick, &held))
+                }
+                fn hurt_entity(
+                    player: Player,
+                    stack: $crate::server::HeldStack,
+                    entity: $crate::server::Entity,
+                    damage: f32,
+                ) -> Result<f32, String> {
+                    let mut out = Err("The mod is not running".to_string());
+                    with(|m| out = m.hurt_entity(&player, &stack, &entity, damage));
+                    out
+                }
+                fn hurt(player: Player, damage: f32, source: String) -> Result<f32, String> {
+                    let mut out = Err("The mod is not running".to_string());
+                    with(|m| out = m.player_hurt(&player, damage, &source));
+                    out
                 }
             }
             #[cfg(target_arch = "wasm32")]

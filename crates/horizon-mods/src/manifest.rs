@@ -124,9 +124,13 @@ pub enum Capability {
     Multiblocks,
     /// Data the mod keeps on the world itself, saved with it (server mods).
     SavedData,
+    /// Behaviour on the items the mod claims: their use and their blow,
+    /// each tick held or worn, and bytes of its own on each stack (server
+    /// mods).
+    ItemHooks,
 }
 impl Capability {
-    pub const ALL: [Capability; 20] = [
+    pub const ALL: [Capability; 21] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -147,6 +151,7 @@ impl Capability {
         Capability::MachineRecipes,
         Capability::Multiblocks,
         Capability::SavedData,
+        Capability::ItemHooks,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -163,6 +168,7 @@ impl Capability {
                 | Capability::MachineRecipes
                 | Capability::Multiblocks
                 | Capability::SavedData
+                | Capability::ItemHooks
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -188,6 +194,7 @@ impl Capability {
             Capability::MachineRecipes => "machine-recipes",
             Capability::Multiblocks => "multiblocks",
             Capability::SavedData => "saved-data",
+            Capability::ItemHooks => "item-hooks",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -207,6 +214,7 @@ impl Capability {
                 | Capability::MachineRecipes
                 | Capability::Multiblocks
                 | Capability::SavedData
+                | Capability::ItemHooks
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -242,6 +250,9 @@ impl Capability {
                 "keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break"
             }
             Capability::SavedData => "keep data of its own on the world, saved with the world",
+            Capability::ItemHooks => {
+                "act on the items it claims: their use and their blow, each tick held or worn, and data of its own on each stack"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -291,6 +302,7 @@ impl fmt::Display for Capability {
             Capability::MachineRecipes => "machine-recipes",
             Capability::Multiblocks => "multiblocks",
             Capability::SavedData => "saved-data",
+            Capability::ItemHooks => "item-hooks",
         };
         f.write_str(name)
     }

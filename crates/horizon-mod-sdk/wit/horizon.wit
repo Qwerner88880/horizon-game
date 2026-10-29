@@ -986,6 +986,98 @@ interface displays {
     hide: func(name: string);
 }
 
+/// Capability `item-hooks`, server mods only (manifest `api = "0.3"`,
+/// experimental): behaviour on the items the mod claims (`item-events.items`)
+/// — the use of the item itself, its blow on an entity, each tick it is held
+/// or worn — and bytes of the mod's own kept on a stack (energy in a tool,
+/// its mode), saved with the stack wherever it goes.
+interface item-hooks {
+    record held-stack {
+        /// `minecraft:blaze_rod`, `<mod>:<path>`.
+        item: string,
+        count: u32,
+        /// The mod's own bytes on this stack, as `set-data` wrote them:
+        /// empty for none. Saved with the stack, in its components.
+        data: list<u8>,
+    }
+    /// The stack in `slot` of `player`'s inventory (36 slots, hotbar first,
+    /// then armour feet to head 36..39, then the off hand 40), when it is
+    /// one of the mod's claimed items: none for an empty slot, another item
+    /// or a player not on the server. Only during the server's hooks.
+    stack: func(player: string, slot: u32) -> option<held-stack>;
+    /// Replaces the mod's bytes on `player`'s stack in `slot` (none empties
+    /// them). Err for a slot that isn't one of the mod's claimed items, a
+    /// stack of more than one (a split copies a stack's components to both
+    /// halves, so charge on a splittable stack would double: a stack that
+    /// carries data keeps count 1), over 4 KiB, or more than 32 such writes
+    /// in one call. Only during the server's hooks.
+    set-data: func(player: string, slot: u32, data: option<list<u8>>) -> result<_, string>;
+}
+
+/// What the server calls in a server mod with capability `item-hooks`. A
+/// server mod built before it has no such export and keeps working.
+interface item-events {
+    use players.{player};
+    use item-hooks.{held-stack};
+    record used-block {
+        /// `minecraft:overworld`, ...
+        dimension: string,
+        x: s32,
+        y: s32,
+        z: s32,
+        /// The block, as `minecraft:oak_log[axis=y]`.
+        state: string,
+    }
+    record player-stack {
+        player: player,
+        /// 36 slots, hotbar first, then armour feet to head, then 40 the
+        /// off hand; only the mod's claimed items are ever listed.
+        slot: u32,
+        stack: held-stack,
+    }
+    record entity {
+        /// The entity's id, as the server counts entities.
+        id: u32,
+        /// `minecraft:zombie`, ...; `minecraft:player` for a PvP blow.
+        kind: string,
+        /// Its hit points before the blow.
+        health: f32,
+    }
+    /// Once, after `init`: the items (`minecraft:stick`, a content mod's
+    /// `mymod:wrench`) whose behaviour the mod takes, at most 256. None: the
+    /// other hooks are never called.
+    items: func() -> list<string>;
+    /// The player used (right-clicked) one of those items in the main hand,
+    /// with nothing to use it on. The game does nothing else with the click
+    /// (no eating, no throw, no swing-into-place), but a sneaking player
+    /// keeps vanilla's use, and a block a mod takes the use of wins over the
+    /// item (that mod hears `block_used`, this one nothing).
+    used: func(player: player, stack: held-stack);
+    /// The same click with the crosshair on a block, after the block's own
+    /// vanilla use passed (a door opened still swallows the click).
+    used-on-block: func(player: player, stack: held-stack, block: used-block);
+    /// Each server tick, after `block_entity_tick`: every stack of those
+    /// items on every online player, held or worn. At most 512 a call: a
+    /// longer list comes in turns — the game walks it round-robin from where
+    /// the last tick stopped, so every stack is told within ceil(n / 512)
+    /// ticks. Armour comes with its slot: 36 feet, 37 legs, 38 chest,
+    /// 39 head.
+    inventory-tick: func(tick: u64, held: list<player-stack>);
+    /// The player holding one of those items in the main hand struck
+    /// `entity` (a mob, or a player in a PvP blow) for `damage` (vanilla's
+    /// count, enchantments in): answer with what the blow should deal
+    /// instead, 0 to cancel it. Only the number changes — knockback, sweep
+    /// and the rest are vanilla's. An error cancels nothing (vanilla's
+    /// damage).
+    hurt-entity: func(player: player, stack: held-stack, entity: entity, damage: f32) -> result<f32, string>;
+    /// `player` was hurt for `damage` (a damage type id, as
+    /// `minecraft:generic`) while wearing one of those items: answer with
+    /// how much of it the armour takes (0 to `damage`); what it takes is
+    /// gone, the rest hurts as vanilla has it. The mod hears this once a
+    /// blow whatever it answers. An error takes nothing.
+    hurt: func(player: player, damage: f32, source: string) -> result<f32, string>;
+}
+
 /// What the server calls in a server mod with capability `menus`.
 interface menu-events {
     use players.{player};
@@ -1204,10 +1296,12 @@ world horizon-block-mod {
     import machine-recipes;
     import multiblocks;
     import saved-data;
+    import item-hooks;
     export block-entity-events;
     export menu-events;
     export block-use-events;
     export multiblock-events;
+    export item-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -1253,6 +1347,14 @@ world multiblock-host {
 /// The game's side of capability `saved-data` (imports only).
 world saved-data-host {
     import saved-data;
+}
+
+/// The game's side of capability `item-hooks`: a world of its own, so server
+/// mods built before it (no `item-events` export) still load.
+world item-host {
+    import players;
+    import item-hooks;
+    export item-events;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

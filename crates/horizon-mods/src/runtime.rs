@@ -114,6 +114,27 @@ mod use_bindings {
 }
 use menu_bindings::{MenuHost, horizon::mods::menus};
 use use_bindings::{UseHost, exports::horizon::mods::block_use_events::UsedBlock};
+/// Capability `item-hooks`' world: its own, so server mods built before it
+/// (no `item-events` export) still load. `players` is the server world's.
+mod item_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "item-host",
+        with: {
+            "horizon:mods/players": super::server_bindings::horizon::mods::players,
+        },
+    });
+}
+/// A stack as capability `item-hooks` hands it to a mod: the item, its count
+/// and the mod's own bytes on it.
+pub use item_bindings::horizon::mods::item_hooks::HeldStack;
+use item_bindings::{
+    ItemHost,
+    exports::horizon::mods::item_events::{
+        Entity as ItemEntity, PlayerStack, UsedBlock as ItemUsedBlock,
+    },
+    horizon::mods::item_hooks,
+};
 /// Capability `displays`' imports.
 mod display_bindings {
     wasmtime::component::bindgen!({
@@ -135,6 +156,17 @@ const CHECK_READS: usize = 8192;
 const MENU_ROWS: u32 = 6;
 /// Claimed blocks a mod may list (`block-entity-events.blocks`).
 const CLAIMED_BLOCKS: usize = 256;
+/// Items a mod may claim (`item-events.items`).
+const CLAIMED_ITEMS: usize = 256;
+/// Bytes of a mod's own on one stack (`item-hooks.set-data`): a component
+/// on the stack, saved with it.
+const STACK_DATA: usize = 4096;
+/// `set-data` calls one hook call may make: each rewrites the stack's
+/// components, so a loop of them needs its own bound beside fuel.
+const SET_DATA_PER_CALL: u32 = 32;
+/// Stacks one `inventory-tick` call gets; a longer list comes in turns
+/// (the game walks it round-robin).
+pub const TICK_ITEMS: usize = 512;
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
 mod render_bindings {
     wasmtime::component::bindgen!({
@@ -409,8 +441,29 @@ pub trait WorldView: std::any::Any + Send {
 
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
+/// The server's players' inventories during a call: the game lends one
+/// with [`Mods::lend_player_items`] and takes it back after. The stack in
+/// `slot` of `player`'s inventory, as the mod's hooks number slots (36
+/// slots, hotbar first, then armour feet to head 36..39, then the off hand
+/// 40): the item's id, its count and the mod's own bytes on it.
+pub trait PlayerItems: std::any::Any + Send {
+    /// None for an empty slot, a player not on the server or a slot out of
+    /// range.
+    fn stack(&self, player: &str, slot: u32, mod_id: &str) -> Option<(String, u32, Vec<u8>)>;
+    /// Replaces the mod's bytes on that stack (empty removes them): Err
+    /// when the game cannot (no such player, no stack in the slot).
+    fn set_data(
+        &mut self,
+        player: &str,
+        slot: u32,
+        mod_id: &str,
+        data: &[u8],
+    ) -> Result<(), String>;
+}
 /// Capability `block-entities`' store, lent like the world.
 type EntitySlot = Arc<Mutex<Option<crate::BlockEntities>>>;
+/// The players' inventories, lent like the world.
+type PlayerSlot = Arc<Mutex<Option<Box<dyn PlayerItems>>>>;
 /// Capability `machine-recipes`' table: static content, not lent world
 /// state — filled once by [`Mods::load_for`] before any mod starts, and
 /// every mod's `init` already reads it.
@@ -481,6 +534,9 @@ struct Running {
     uses: Option<(UseHost, Vec<String>)>,
     /// Capability `multiblocks`: the `multiblock-events` export.
     multiblocks: Option<MultiblockHost>,
+    /// Capability `item-hooks`: the `item-events` export and the items it
+    /// claims.
+    items: Option<(ItemHost, Vec<String>)>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -593,6 +649,13 @@ struct State {
     entities: EntitySlot,
     machine_recipes: RecipeSlot,
     multiblocks: TemplateSlot,
+    player_items: PlayerSlot,
+    /// The items the mod claims (capability `item-hooks`), as `items()`
+    /// answered: `stack` and `set-data` take no other item.
+    item_claims: Vec<String>,
+    /// `set-data` calls this hook call has made (reset per call in
+    /// [`Mods::call`]).
+    item_writes: u32,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -607,6 +670,7 @@ pub struct Mods {
     entities: EntitySlot,
     machine_recipes: RecipeSlot,
     multiblocks: TemplateSlot,
+    player_items: PlayerSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -664,6 +728,26 @@ impl Mods {
     /// The store [`Mods::lend_block_entities`] lent, back to the game.
     pub fn take_block_entities(&mut self) -> Option<crate::BlockEntities> {
         self.entities.lock().ok()?.take()
+    }
+    /// Lends the server's players' inventories to capability `item-hooks`
+    /// for the calls until [`Mods::take_player_items`]; with none lent,
+    /// `stack` finds nothing and `set-data` is an error.
+    pub fn lend_player_items(&mut self, view: Box<dyn PlayerItems>) {
+        if let Ok(mut slot) = self.player_items.lock() {
+            *slot = Some(view);
+        }
+    }
+    /// The view [`Mods::lend_player_items`] lent, back to the game (its
+    /// `set-data` writes are the game's to apply).
+    pub fn take_player_items(&mut self) -> Option<Box<dyn PlayerItems>> {
+        self.player_items.lock().ok()?.take()
+    }
+    /// Whether a running mod claims items (capability `item-hooks`): only
+    /// then are the players' inventories worth lending.
+    pub fn wants_player_items(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.items.is_some()))
     }
     /// Each running mod with block entities: its id and the blocks it claims.
     pub fn block_entity_claims(&self) -> Vec<(String, Vec<String>)> {
@@ -1008,6 +1092,134 @@ impl Mods {
             None => Ok(()),
         });
     }
+    /// Each running mod taking the behaviour of some items (capability
+    /// `item-hooks`): its id and those items.
+    pub fn item_use_claims(&self) -> Vec<(String, Vec<String>)> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let run = e.run.as_ref()?;
+                let (_, items) = run.items.as_ref()?;
+                Some((run.store.data().id.clone(), items.clone()))
+            })
+            .collect()
+    }
+    /// `player` used (right-clicked) the stack in the main hand — `stack`,
+    /// with the mod's own bytes on it — one mod `mod_id` claims (capability
+    /// `item-hooks`): `used`, or `used-on-block` where the crosshair was on
+    /// `block` (its position in the player's dimension and state). The mod
+    /// hears it at the tick's end.
+    pub fn item_used(
+        &mut self,
+        mod_id: &str,
+        player: &ServerPlayer,
+        stack: HeldStack,
+        block: Option<([i32; 3], &str)>,
+    ) {
+        let Some(i) = self.running_index(mod_id) else {
+            return;
+        };
+        let block = block.map(|(pos, state)| ItemUsedBlock {
+            dimension: player.dimension.clone(),
+            x: pos[0],
+            y: pos[1],
+            z: pos[2],
+            state: state.to_owned(),
+        });
+        self.call(i, FUEL_EVENT, |run| match &run.items {
+            Some((h, _)) => match &block {
+                Some(b) => h.horizon_mods_item_events().call_used_on_block(
+                    &mut run.store,
+                    player,
+                    &stack,
+                    b,
+                ),
+                None => h
+                    .horizon_mods_item_events()
+                    .call_used(&mut run.store, player, &stack),
+            },
+            None => Ok(()),
+        });
+    }
+    /// Each server tick, after [`Mods::block_entity_tick`]: every claimed
+    /// stack of every online player to the mod that claims it, held or worn
+    /// (`inventory-tick`). The game collects the lists, at most
+    /// [`TICK_ITEMS`] stacks a mod.
+    pub fn player_items_tick(&mut self, tick: u64, held: &[(String, Vec<PlayerStack>)]) {
+        for (id, stacks) in held {
+            let Some(i) = self.running_index(id) else {
+                continue;
+            };
+            if stacks.is_empty() {
+                continue;
+            }
+            self.call(i, FUEL_TICK, |run| match &run.items {
+                Some((h, _)) => {
+                    h.horizon_mods_item_events()
+                        .call_inventory_tick(&mut run.store, tick, stacks)
+                }
+                None => Ok(()),
+            });
+        }
+    }
+    /// The player holding one of mod `mod_id`'s claimed items in the main
+    /// hand struck `entity` for `damage`: the mod's answer is the damage to
+    /// deal instead, kept to `0.0` and four times vanilla's; an error (or a
+    /// trap, which turns the mod off) keeps vanilla's.
+    pub fn item_hurt_entity(
+        &mut self,
+        mod_id: &str,
+        player: &ServerPlayer,
+        stack: HeldStack,
+        entity: &ItemEntity,
+        damage: f32,
+    ) -> f32 {
+        let Some(i) = self.running_index(mod_id) else {
+            return damage;
+        };
+        let answer = self.call(i, FUEL_EVENT, |run| match &run.items {
+            Some((h, _)) => h.horizon_mods_item_events().call_hurt_entity(
+                &mut run.store,
+                player,
+                &stack,
+                entity,
+                damage,
+            ),
+            None => Ok(Ok(damage)),
+        });
+        match answer {
+            Some(Ok(n)) if n.is_finite() => n.clamp(0.0, damage * 4.0),
+            _ => damage,
+        }
+    }
+    /// `player` was hurt for `damage` of `source`: each mod claiming items
+    /// answers with how much of it its armour takes, and what the answers
+    /// take together is gone (kept to `damage`; an error takes nothing).
+    pub fn item_hurt(&mut self, player: &ServerPlayer, damage: f32, source: &str) -> f32 {
+        let mut taken = 0.0;
+        for i in 0..self.entries.len() {
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_none_or(|r| r.items.is_none())
+            {
+                continue;
+            }
+            let answer = self.call(i, FUEL_EVENT, |run| match &run.items {
+                Some((h, _)) => {
+                    h.horizon_mods_item_events()
+                        .call_hurt(&mut run.store, player, damage, source)
+                }
+                None => Ok(Ok(0.0)),
+            });
+            if let Some(Ok(n)) = answer
+                && n.is_finite()
+            {
+                taken += n.clamp(0.0, damage);
+            }
+        }
+        taken.min(damage)
+    }
     /// Whether mod `mod_id` runs here.
     pub fn runs(&self, mod_id: &str) -> bool {
         self.running_index(mod_id).is_some()
@@ -1164,6 +1376,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             saved_data::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            item_hooks::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -1206,12 +1420,28 @@ impl Mods {
         let entities = self.entities.clone();
         let machine_recipes = self.machine_recipes.clone();
         let multiblocks = self.multiblocks.clone();
+        let player_items = self.player_items.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
         let ty = component.component_type();
+        // An interface the component imports with none of its functions —
+        // the shape an exported interface's shared types leave in it
+        // (`item-events` uses `item-hooks`' `held-stack`) — asks for no
+        // capability: a capability is what a mod calls.
         let imports: Vec<String> = ty
             .imports(engine)
+            .filter(|(_, item)| match &item.ty {
+                wasmtime::component::types::ComponentItem::ComponentInstance(i) => {
+                    i.exports(engine).any(|(_, e)| {
+                        matches!(
+                            e.ty,
+                            wasmtime::component::types::ComponentItem::ComponentFunc(_)
+                        )
+                    })
+                }
+                _ => true,
+            })
             .map(|(name, _)| name.to_string())
             .collect();
         m.check_imports(imports.iter().map(String::as_str))?;
@@ -1250,6 +1480,9 @@ impl Mods {
             entities,
             machine_recipes,
             multiblocks,
+            player_items,
+            item_claims: Vec::new(),
+            item_writes: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1342,6 +1575,25 @@ impl Mods {
             true => MultiblockHost::new(&mut store, &instance).ok(),
             false => None,
         };
+        // `item-events` (capability `item-hooks`): a server mod built before
+        // the capability has no export and keeps working, claiming no items.
+        let mut items = None;
+        if server
+            && m.capabilities.contains(&crate::Capability::ItemHooks)
+            && let Ok(host) = ItemHost::new(&mut store, &instance)
+        {
+            store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+            let mut claimed = host
+                .horizon_mods_item_events()
+                .call_items(&mut store)
+                .map_err(|e| reason(&e))?;
+            claimed.truncate(CLAIMED_ITEMS);
+            claimed.retain(|i| i.contains(':') && !i.contains('['));
+            if !claimed.is_empty() {
+                store.data_mut().item_claims = claimed.clone();
+                items = Some((host, claimed));
+            }
+        }
         self.generation += 1;
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
@@ -1355,6 +1607,7 @@ impl Mods {
             menus,
             uses,
             multiblocks,
+            items,
         }))
     }
 
@@ -1437,6 +1690,7 @@ impl Mods {
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
+        run.store.data_mut().item_writes = 0;
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
         // An average over about the last 64 calls.
@@ -2889,6 +3143,58 @@ impl saved_data::Host for State {
                 .collect()
         })
         .unwrap_or_default()
+    }
+}
+
+/// Capability `item-hooks`' reads and writes of the mod's own bytes on the
+/// players' stacks, through the inventories lent for the call: a call
+/// outside the server's hooks is an error, not a trap.
+impl item_hooks::Host for State {
+    fn stack(&mut self, player: String, slot: u32) -> Option<HeldStack> {
+        let view = self.player_items.lock().ok()?;
+        let view = view.as_ref()?;
+        let (item, count, data) = view.stack(&player, slot, &self.id)?;
+        self.item_claims.contains(&item).then_some(HeldStack {
+            item,
+            count,
+            data,
+        })
+    }
+    fn set_data(&mut self, player: String, slot: u32, data: Option<Vec<u8>>) -> Result<(), String> {
+        if self.item_writes >= SET_DATA_PER_CALL {
+            return Err(format!("at most {SET_DATA_PER_CALL} set-data calls a call"));
+        }
+        let data = data.unwrap_or_default();
+        if data.len() > STACK_DATA {
+            return Err(format!(
+                "{} bytes: at most {STACK_DATA} on one stack",
+                data.len()
+            ));
+        }
+        let mut view = self
+            .player_items
+            .lock()
+            .map_err(|_| "the players' stacks are unavailable".to_string())?;
+        let view = view
+            .as_mut()
+            .ok_or("the players' stacks are kept only during server hooks")?;
+        let (item, count, _) = view
+            .stack(&player, slot, &self.id)
+            .ok_or(format!("slot {slot} of {player} holds no item"))?;
+        if !self.item_claims.contains(&item) {
+            return Err(format!("slot {slot} of {player} holds no item of this mod"));
+        }
+        // A split copies a stack's components to both halves, so charge on a
+        // splittable stack would double: a stack that carries data keeps
+        // count 1.
+        if count > 1 {
+            return Err(format!(
+                "a stack of {count} {item}: data is kept on one item, not a stack"
+            ));
+        }
+        view.set_data(&player, slot, &self.id, &data)?;
+        self.item_writes += 1;
+        Ok(())
     }
 }
 
