@@ -943,7 +943,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 6);
+    assert_eq!(ran, 7);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):

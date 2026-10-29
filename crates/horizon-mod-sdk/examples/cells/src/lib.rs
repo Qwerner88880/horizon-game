@@ -22,11 +22,17 @@
 //! power grids (capability `saved-data`) are data on the world itself:
 //! `/cellnet <name>` joins the cell under the player to a grid, `/cellnet`
 //! lists them; a grid goes when its last cell does, and a restart of the
-//! mod loses nothing.
+//! mod loses nothing. Its energy staff (capability `item-hooks`) is a
+//! blaze rod in the main hand: `/staff` reads its charge, a use spends it,
+//! a blow with it deals twice over, a click or a tick on a cell moves
+//! energy between the two, and a golden helmet worn takes a hurt a share
+//! at a time — their charge is the mod's own bytes on the stack, saved
+//! with it wherever it goes.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, MenuItem, MenuSlot, Multiblock, Player, Registration, ServerMod,
-    Shape, SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items,
-    machine_recipes, menus, multiblocks, players, saved_data,
+    Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, Multiblock,
+    Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, Stack, Transform, UsedBlock,
+    block_entities, displays, energy, item_hooks, items, machine_recipes, menus, multiblocks,
+    players, saved_data,
 };
 use std::collections::BTreeMap;
 
@@ -172,6 +178,131 @@ fn under(player: &Player) -> (i32, i32, i32) {
 /// little-endian): moved into its buffer when it gets one.
 fn legacy_energy(data: &[u8]) -> u64 {
     data.try_into().map_or(0, u64::from_le_bytes)
+}
+
+/// The energy staff: a blaze rod held in the main hand (capability
+/// `item-hooks`), its charge bytes of this mod's own on the stack, as
+/// `legacy_energy`'s are on a cell.
+const STAFF: &str = "minecraft:blaze_rod";
+/// The helmet that shields (capability `item-hooks`): a golden helmet
+/// worn, its charge on the stack as the staff's is.
+const HELMET: &str = "minecraft:golden_helmet";
+/// The most a staff or a helmet holds, and what flows either way between
+/// one and a cell at a use or a tick on one.
+const HELD_CAPACITY: u64 = 100_000;
+/// What a use of the staff costs, and what a blow with it spends.
+const USE_COST: u64 = 100;
+const BLOW_COST: u64 = 10;
+/// The most a hurt a charged helmet takes, an FE a point of it.
+const HELMET_TAKE: f32 = 5.0;
+
+/// The charge in a held stack's bytes of this mod's own.
+fn held_energy(data: &[u8]) -> u64 {
+    data.try_into().map_or(0, u64::from_le_bytes)
+}
+
+/// The bytes of a held stack's charge.
+fn held_data(energy: u64) -> Vec<u8> {
+    energy.to_le_bytes().to_vec()
+}
+
+/// What flows between a held stack holding `held` FE and a cell holding
+/// `cell` FE: into the held stack (true) or the cell, and how much — up to
+/// [`STEP`], never past either's capacity.
+fn held_flow(held: u64, cell: u64) -> (bool, u64) {
+    if held < cell {
+        (true, STEP.min(cell).min(HELD_CAPACITY - held))
+    } else {
+        (false, STEP.min(held).min(CAPACITY - cell))
+    }
+}
+
+/// Moves energy between a held stack and the mod's cell at a place, both
+/// ways, as the menu's Fill and Drain buttons do — the cell's own stored
+/// written directly, for the cell is the mod's. What moved, and which way.
+fn move_between(
+    player: &Player,
+    item: &str,
+    held: u64,
+    dimension: &str,
+    x: i32,
+    y: i32,
+    z: i32,
+    cell: u64,
+) -> Option<(bool, u64)> {
+    let (into_held, amount) = held_flow(held, cell);
+    if amount == 0 {
+        return None;
+    }
+    if into_held {
+        if !set_held(player, item, held + amount) {
+            return None;
+        }
+        let _ = energy::set_stored(dimension, x, y, z, cell - amount);
+    } else {
+        if !set_held(player, item, held - amount) {
+            return None;
+        }
+        let _ = energy::set_stored(dimension, x, y, z, cell + amount);
+    }
+    Some((into_held, amount))
+}
+
+/// The slot of the player's one of `item` (capability `item-hooks`): the
+/// hotbar for a staff, the armour slots for a helmet. A stack of more than
+/// one is none — its charge would double on a split.
+fn held_slot(player: &Player, item: &str) -> Option<u32> {
+    let slots = match item {
+        HELMET => 36..40,
+        _ => 0..9,
+    };
+    slots.into_iter().find(|&slot| {
+        item_hooks::stack(&player.id, slot).is_some_and(|held| {
+            held.item == item && held.count == 1 && held_energy(&held.data) <= HELD_CAPACITY
+        })
+    })
+}
+
+/// Sets a held stack's charge (capability `item-hooks`): nothing to set
+/// where the player holds no such stack.
+fn set_held(player: &Player, item: &str, energy: u64) -> bool {
+    match held_slot(player, item) {
+        Some(slot) => item_hooks::set_data(&player.id, slot, Some(&held_data(energy))).is_ok(),
+        None => false,
+    }
+}
+
+/// What a use of the main hand's staff is.
+enum StaffUse {
+    /// The charge left after a spend.
+    Spend(u64),
+    /// Not enough charge for one.
+    Empty,
+    /// A stack of more than one: charge is kept on the item, not a stack.
+    Stack,
+}
+
+/// A use of the staff, from its count and charge.
+fn staff_use(count: u32, energy: u64) -> StaffUse {
+    if count > 1 {
+        StaffUse::Stack
+    } else if energy < USE_COST {
+        StaffUse::Empty
+    } else {
+        StaffUse::Spend(energy - USE_COST)
+    }
+}
+
+/// A blow with the staff: the charge left after its cost, where it has it
+/// (and is one item); None keeps vanilla's damage.
+fn staff_blow(count: u32, energy: u64) -> Option<u64> {
+    (count == 1 && energy >= BLOW_COST).then_some(energy - BLOW_COST)
+}
+
+/// The hurt a charged helmet takes: the fixed share, or all its charge
+/// left, an FE a point.
+fn helmet_take(damage: f32, energy: u64) -> f32 {
+    damage.min(HELMET_TAKE).min(energy as f32)
 }
 
 /// The energy in the buffer at a position; 0 where there is none yet.
@@ -333,7 +464,8 @@ impl ServerMod for Cells {
                 .command_with("cellitems", [Argument::block_pos("pos").optional()])
                 .command_with("cellcore", [Argument::block_pos("pos").optional()])
                 .command_with("cellnet", [Argument::word("name").optional()])
-                .command_with("cellrecipes", []),
+                .command_with("cellrecipes", [])
+                .command_with("staff", []),
         ))
     }
 
@@ -487,6 +619,21 @@ impl ServerMod for Cells {
         if name == "cellrecipes" {
             return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
         }
+        if name == "staff" {
+            // The staff in the main hand (capability `item-hooks`): a hook
+            // hears the stack, not its slot, so this scans for it as the
+            // hooks' own writes do.
+            return Ok(Some(match held_slot(player, STAFF) {
+                Some(slot) => match item_hooks::stack(&player.id, slot) {
+                    Some(held) => format!(
+                        "Staff in slot {slot}: {} / {HELD_CAPACITY} FE",
+                        held_energy(&held.data)
+                    ),
+                    None => "No staff in hand: hold one blaze rod, alone".into(),
+                },
+                None => "No staff in hand: hold one blaze rod, alone".into(),
+            }));
+        }
         if name == "cellcore" {
             let (x, y, z) = target(player, args);
             let d = &player.dimension;
@@ -567,6 +714,140 @@ impl ServerMod for Cells {
             "The core at {} {} {} broke",
             block.x, block.y, block.z
         ));
+    }
+
+    fn item_hooks_items() -> Vec<String> {
+        vec![STAFF.into(), HELMET.into()]
+    }
+
+    fn item_used(&mut self, player: &Player, stack: &HeldStack) {
+        if stack.item != STAFF {
+            return;
+        }
+        match staff_use(stack.count, held_energy(&stack.data)) {
+            StaffUse::Spend(left) => {
+                if set_held(player, STAFF, left) {
+                    players::tell(&player.id, &format!("The staff has {left} FE left"));
+                }
+            }
+            StaffUse::Empty => {
+                players::tell(
+                    &player.id,
+                    "The staff is empty: stand it on a cell to charge",
+                );
+            }
+            StaffUse::Stack => {
+                players::tell(
+                    &player.id,
+                    "Stack the staff one by one: its charge is kept on the item",
+                );
+            }
+        }
+    }
+
+    fn item_used_on_block(&mut self, player: &Player, stack: &HeldStack, block: &ItemUsedBlock) {
+        if stack.item != STAFF || block.state.split('[').next() != Some(CELL) || stack.count > 1 {
+            return;
+        }
+        // Only one of the mod's cells: a buffer of its own.
+        if block_entities::get(&block.dimension, block.x, block.y, block.z).is_none() {
+            return;
+        }
+        let (x, y, z) = (block.x, block.y, block.z);
+        let (held, cell) = (held_energy(&stack.data), stored(&block.dimension, x, y, z));
+        match move_between(player, STAFF, held, &block.dimension, x, y, z, cell) {
+            Some((true, amount)) => {
+                players::tell(
+                    &player.id,
+                    &format!("{amount} FE into the staff ({} FE)", held + amount),
+                );
+            }
+            Some((false, amount)) => {
+                players::tell(
+                    &player.id,
+                    &format!("{amount} FE into the cell ({} FE)", cell + amount),
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn inventory_tick(&mut self, _tick: u64, held: &[PlayerStack]) {
+        for held in held {
+            let stack = &held.stack;
+            if stack.count > 1 {
+                continue;
+            }
+            // A staff or a helmet standing on a cell charges from it, as a
+            // use on one moves energy both ways.
+            let energy = held_energy(&stack.data);
+            if energy >= HELD_CAPACITY {
+                continue;
+            }
+            let (x, y, z) = under(&held.player);
+            let d = &held.player.dimension;
+            if block_entities::get(d, x, y, z).is_none() {
+                continue;
+            }
+            move_between(
+                &held.player,
+                &stack.item,
+                energy,
+                d,
+                x,
+                y,
+                z,
+                stored(d, x, y, z),
+            );
+        }
+    }
+
+    fn hurt_entity(
+        &mut self,
+        player: &Player,
+        stack: &HeldStack,
+        entity: &Entity,
+        damage: f32,
+    ) -> Result<f32, String> {
+        if stack.item != STAFF {
+            return Ok(damage);
+        }
+        let Some(left) = staff_blow(stack.count, held_energy(&stack.data)) else {
+            return Ok(damage);
+        };
+        if !set_held(player, STAFF, left) {
+            return Ok(damage);
+        }
+        players::tell(
+            &player.id,
+            &format!(
+                "The staff doubles the blow on {} to {:.1}",
+                entity.kind,
+                damage * 2.0
+            ),
+        );
+        Ok(damage * 2.0)
+    }
+
+    fn player_hurt(&mut self, player: &Player, damage: f32, source: &str) -> Result<f32, String> {
+        let Some(slot) = held_slot(player, HELMET) else {
+            return Ok(0.0);
+        };
+        let energy = match item_hooks::stack(&player.id, slot) {
+            Some(held) => held_energy(&held.data),
+            None => return Ok(0.0),
+        };
+        if energy < 1 {
+            players::tell(&player.id, "The helmet is out of charge");
+            return Ok(0.0);
+        }
+        let take = helmet_take(damage, energy);
+        let _ = item_hooks::set_data(&player.id, slot, Some(&held_data(energy - take as u64)));
+        players::tell(
+            &player.id,
+            &format!("The helmet takes {take:.1} of {damage:.1} {source}"),
+        );
+        Ok(take)
     }
 
     fn menu_clicked(&mut self, player: &Player, _menu: &str, slot: u32, _button: u8, _shift: bool) {
@@ -819,5 +1100,60 @@ mod tests {
         for name in ["MAIN", "", "a b", "a/b", ".", "..", &"x".repeat(65)] {
             assert!(!grid_name_ok(name), "{name}");
         }
+    }
+
+    /// A held stack's charge, as the staff and the helmet keep it.
+    #[test]
+    fn held_charge_round_trips() {
+        assert_eq!(held_energy(&[]), 0);
+        assert_eq!(held_energy(&held_data(0)), 0);
+        for energy in [1, USE_COST, 42_000, HELD_CAPACITY] {
+            assert_eq!(held_energy(&held_data(energy)), energy);
+        }
+        // What is not a charge (not 8 bytes) reads as none, as the first
+        // version's leftover data on a cell does.
+        assert_eq!(held_energy(&[1, 2, 3]), 0);
+    }
+
+    /// What flows between a held stack and a cell: the emptier one fills,
+    /// up to [`STEP`] and neither's capacity.
+    #[test]
+    fn held_flow_fills_the_emptier_side() {
+        assert_eq!(held_flow(0, STEP), (true, STEP));
+        assert_eq!(held_flow(500, STEP), (true, 500));
+        // The cell the fuller: the held stack takes.
+        assert_eq!(held_flow(9_000, 1_000), (true, STEP));
+        // The held stack the fuller: the cell takes.
+        assert_eq!(held_flow(STEP, 0), (false, STEP));
+        assert_eq!(held_flow(2 * STEP, 1_500), (false, 1_500));
+        // Neither past its capacity.
+        assert_eq!(held_flow(HELD_CAPACITY - 10, CAPACITY), (true, 10));
+        assert_eq!(held_flow(HELD_CAPACITY, CAPACITY - 10), (false, 10));
+    }
+
+    /// A use of the staff: a spend, an empty staff, or a stack — a stack
+    /// of more than one carries no charge, a split copying a stack's
+    /// components to both halves.
+    #[test]
+    fn a_use_of_the_staff_spends_or_refuses() {
+        assert_eq!(staff_use(1, 500), StaffUse::Spend(400));
+        assert_eq!(staff_use(1, USE_COST), StaffUse::Spend(0));
+        assert_eq!(staff_use(1, USE_COST - 1), StaffUse::Empty);
+        assert_eq!(staff_use(2, 5_000), StaffUse::Stack);
+        assert_eq!(staff_use(64, 0), StaffUse::Stack);
+    }
+
+    /// A blow with the staff doubles while it has the cost; the helmet's
+    /// take is the fixed share, or all its charge left, an FE a point.
+    #[test]
+    fn a_blow_and_a_hurt() {
+        assert_eq!(staff_blow(1, BLOW_COST), Some(BLOW_COST - BLOW_COST));
+        assert_eq!(staff_blow(1, BLOW_COST - 1), None);
+        assert_eq!(staff_blow(2, 5_000), None);
+        let take = |damage: f32, energy: u64| helmet_take(damage, energy);
+        assert_eq!(take(10.0, 100), HELMET_TAKE);
+        assert_eq!(take(3.5, 100), 3.5);
+        assert_eq!(take(10.0, 3), 3.0);
+        assert_eq!(take(10.0, 0), 0.0);
     }
 }

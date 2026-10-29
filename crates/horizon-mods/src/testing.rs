@@ -36,10 +36,89 @@ pub struct TestGame {
     pub world: std::collections::BTreeMap<(i32, i32, i32), String>,
     /// Capability `block-entities`' store, lent to the mod with the world.
     pub block_entities: crate::BlockEntities,
+    /// The players' stacks (capability `item-hooks`), by player id: 41
+    /// slots each, hotbar first, armour feet to head 36..39, the off hand
+    /// 40. What `set-data` writes stays there, as it stays on the stack in
+    /// the game.
+    pub stacks: std::collections::BTreeMap<String, Vec<Option<crate::items::Stack>>>,
 }
 
 /// The world a script's mod reads: [`TestGame::world`], copied for a step.
 struct ScriptWorld(std::collections::BTreeMap<(i32, i32, i32), String>);
+
+/// The players' stacks a script's mod reads and changes (capability
+/// `item-hooks`): [`TestGame::stacks`], copied for a step, its `set-data`
+/// writes carried back — the copy is taken before the step's own holds, so
+/// only the writes come home.
+struct ScriptItems {
+    stacks: std::collections::BTreeMap<String, Vec<Option<crate::items::Stack>>>,
+    written: Vec<(String, u32)>,
+}
+
+impl crate::PlayerItems for ScriptItems {
+    fn stack(&self, player: &str, slot: u32, mod_id: &str) -> Option<(String, u32, Vec<u8>)> {
+        let stack = self.stacks.get(player)?.get(slot as usize)?.as_ref()?;
+        Some((
+            stack.item.clone(),
+            stack.count,
+            data_of(&stack.components, mod_id),
+        ))
+    }
+    fn set_data(
+        &mut self,
+        player: &str,
+        slot: u32,
+        mod_id: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let stack = self
+            .stacks
+            .get_mut(player)
+            .and_then(|slots| slots.get_mut(slot as usize))
+            .and_then(Option::as_mut)
+            .ok_or_else(|| format!("slot {slot} of {player} holds no item"))?;
+        set_data_in(&mut stack.components, mod_id, data);
+        self.written.push((player.to_owned(), slot));
+        Ok(())
+    }
+}
+
+/// The mod's own bytes in a stack's `components`, as the harness keeps
+/// them: a `key=value` pair among comma-separated ones, the bytes as
+/// dot-separated numbers (`horizon:cells=104.101`). The game keeps them as
+/// a byte-array component; the harness needs no full item syntax.
+fn data_of(components: &str, mod_id: &str) -> Vec<u8> {
+    let key = format!("horizon:{mod_id}=");
+    components
+        .split(',')
+        .find_map(|part| {
+            let bytes = part.strip_prefix(&key)?;
+            Some(
+                bytes
+                    .split('.')
+                    .filter(|b| !b.is_empty())
+                    .filter_map(|b| b.parse().ok())
+                    .collect::<Vec<u8>>(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Replaces the mod's bytes in a stack's `components` (empty removes
+/// them), as `set-data` does on the game's stacks.
+fn set_data_in(components: &mut String, mod_id: &str, data: &[u8]) {
+    let key = format!("horizon:{mod_id}=");
+    let mut parts: Vec<String> = std::mem::take(components)
+        .split(',')
+        .filter(|part| !part.is_empty() && !part.starts_with(&key))
+        .map(str::to_owned)
+        .collect();
+    if !data.is_empty() {
+        let bytes: Vec<String> = data.iter().map(|b| b.to_string()).collect();
+        parts.push(format!("{key}{}", bytes.join(".")));
+    }
+    *components = parts.join(",");
+}
 
 impl crate::WorldView for ScriptWorld {
     fn max_stack(&self, _item: &str) -> Option<u32> {
@@ -127,6 +206,7 @@ impl TestGame {
             tick: 0,
             world: Default::default(),
             block_entities: Default::default(),
+            stacks: Default::default(),
         };
         copy_mod(hmod, &copy)?;
         game.start()?;
@@ -185,7 +265,54 @@ impl TestGame {
             self.mods.tick(self.tick);
             self.mods.server_tick(self.tick);
             self.mods.block_entity_tick(self.tick);
+            self.items_tick();
         }
+    }
+    /// Each tick's `inventory-tick` (capability `item-hooks`): every
+    /// claimed stack of every player on, to the mod that claims it, at most
+    /// [`crate::TICK_ITEMS`] a mod — a longer list walked round-robin by
+    /// the tick, as the game does.
+    fn items_tick(&mut self) {
+        let claims = self.mods.item_use_claims();
+        if claims.is_empty() || self.players.is_empty() {
+            return;
+        }
+        let mut lists = Vec::with_capacity(claims.len());
+        for (id, items) in &claims {
+            let mut held: Vec<crate::PlayerStack> = Vec::new();
+            for player in &self.players {
+                for (slot, stack) in self
+                    .stacks
+                    .get(&player.id)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    let Some(stack) = stack else {
+                        continue;
+                    };
+                    if !items.iter().any(|i| i == &stack.item) {
+                        continue;
+                    }
+                    held.push(crate::PlayerStack {
+                        player: player.clone(),
+                        slot: slot as u32,
+                        stack: crate::HeldStack {
+                            item: stack.item.clone(),
+                            count: stack.count,
+                            data: data_of(&stack.components, id),
+                        },
+                    });
+                }
+            }
+            let len = held.len();
+            if len > crate::TICK_ITEMS {
+                held.rotate_left(self.tick as usize % len);
+                held.truncate(crate::TICK_ITEMS);
+            }
+            lists.push((id.clone(), held));
+        }
+        self.mods.player_items_tick(self.tick, &lists);
     }
     /// `n` frames, 1/60 s apart.
     pub fn frames(&mut self, n: u64) {
@@ -229,6 +356,10 @@ impl TestGame {
             health: p.health,
         };
         self.players.push(player.clone());
+        self.stacks
+            .entry(player.id.clone())
+            .or_default()
+            .resize(41, None);
         self.snapshot();
         self.mods.player_joined(&player);
         player
@@ -239,6 +370,7 @@ impl TestGame {
             return false;
         };
         let player = self.players.remove(i);
+        self.stacks.remove(&player.id);
         self.snapshot();
         self.mods.player_left(&player);
         true
@@ -265,6 +397,120 @@ impl TestGame {
                 self.mods
                     .block_used(&id, player, &player.dimension, at, state);
             }
+        }
+    }
+    /// `player` holds `count` of `item` in `slot` (the main hand is slot
+    /// 0, armour feet to head 36..39), with no data of any mod's on it.
+    pub fn hold(&mut self, player: &ServerPlayer, item: &str, count: u32, slot: u32) {
+        self.stacks
+            .entry(player.id.clone())
+            .or_default()
+            .resize(41, None);
+        if let Some(s) = self
+            .stacks
+            .get_mut(&player.id)
+            .and_then(|s| s.get_mut(slot as usize))
+        {
+            *s = Some(crate::items::Stack {
+                item: item.to_owned(),
+                count,
+                components: String::new(),
+            });
+        }
+    }
+    /// `player` uses (right-clicks) the main hand's stack, which must be
+    /// `count` of `item` (capability `item-hooks`): every mod claiming the
+    /// item hears `used`, or `used-on-block` on `state` at `pos`.
+    pub fn use_item(
+        &mut self,
+        player: &ServerPlayer,
+        item: &str,
+        count: u32,
+        on: Option<(BlockPos, &str)>,
+    ) -> Result<(), String> {
+        self.snapshot();
+        let stack = self.held(player, item, count)?;
+        let data = |id: &str| data_of(&stack.components, id);
+        for (id, items) in self.mods.item_use_claims() {
+            if !items.iter().any(|i| i == &stack.item) {
+                continue;
+            }
+            let held = crate::HeldStack {
+                item: stack.item.clone(),
+                count: stack.count,
+                data: data(&id),
+            };
+            let block = on.map(|(pos, state)| ([pos.x, pos.y, pos.z], state.to_owned()));
+            self.mods.item_used(
+                &id,
+                player,
+                held,
+                block.as_ref().map(|(p, s)| (*p, s.as_str())),
+            );
+        }
+        Ok(())
+    }
+    /// `player`'s blow with the main hand's stack (which must be `count` of
+    /// `item`) on an entity of `kind` at `health` health, for `damage`:
+    /// the claiming mods' answers, chained (capability `item-hooks`).
+    pub fn attack_entity(
+        &mut self,
+        player: &ServerPlayer,
+        item: &str,
+        count: u32,
+        kind: &str,
+        health: f32,
+        damage: f32,
+    ) -> Result<f32, String> {
+        self.snapshot();
+        let stack = self.held(player, item, count)?;
+        let entity = crate::ItemEntity {
+            id: 1,
+            kind: kind.to_owned(),
+            health,
+        };
+        let mut damage = damage;
+        for (id, items) in self.mods.item_use_claims() {
+            if !items.iter().any(|i| i == &stack.item) {
+                continue;
+            }
+            let held = crate::HeldStack {
+                item: stack.item.clone(),
+                count: stack.count,
+                data: data_of(&stack.components, &id),
+            };
+            damage = self
+                .mods
+                .item_hurt_entity(&id, player, held, &entity, damage);
+        }
+        Ok(damage)
+    }
+    /// `player` is hurt for `damage` of `source`: the claiming mods'
+    /// armour takes its share, and what it leaves is the answer (capability
+    /// `item-hooks`).
+    pub fn hurt_player(&mut self, player: &ServerPlayer, source: &str, damage: f32) -> f32 {
+        self.snapshot();
+        self.mods.item_hurt(player, damage, source)
+    }
+    /// The main hand's stack, when it is `count` of `item`: slot 0.
+    fn held(
+        &self,
+        player: &ServerPlayer,
+        item: &str,
+        count: u32,
+    ) -> Result<crate::items::Stack, String> {
+        match self
+            .stacks
+            .get(&player.id)
+            .and_then(|s| s.first())
+            .cloned()
+            .flatten()
+        {
+            Some(s) if s.item == item && s.count == count => Ok(s),
+            _ => Err(format!(
+                "{} holds no {} {} in the main hand (hold = {{ item = \"{}\", count = {} }})",
+                player.name, count, item, item, count
+            )),
         }
     }
     /// `player` clicks slot `slot` of the mod's menu `menu` (capability
@@ -457,6 +703,56 @@ pub struct BlockSet {
     state: String,
 }
 
+/// A stack a player is given to hold (capability `item-hooks`): the main
+/// hand is slot 0, armour feet to head 36..39, the off hand 40.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldSet {
+    item: String,
+    #[serde(default = "one")]
+    count: u32,
+    #[serde(default)]
+    slot: Option<u32>,
+}
+
+/// The item a player uses (capability `item-hooks`): the main hand's
+/// stack, right-clicked into the air or on `on`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UseItemSet {
+    item: String,
+    #[serde(default = "one")]
+    count: u32,
+    #[serde(default)]
+    on: Option<BlockSet>,
+}
+
+/// A player's blow with the main hand's item (capability `item-hooks`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttackSet {
+    /// The item struck with, as the main hand holds it.
+    item: String,
+    #[serde(default = "one")]
+    count: u32,
+    kind: String,
+    health: f32,
+    damage: f32,
+}
+
+/// A player hurt while wearing a claimed item (capability `item-hooks`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HurtSet {
+    amount: f32,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+fn one() -> u32 {
+    1
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct ClockSet {
@@ -465,12 +761,13 @@ pub struct ClockSet {
 }
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
-/// `blocks`, `join`, `player`, `clock`, `ticks`, `frames`, `chat`, `command`,
-/// `break`, `place`, `leave`; then the blocks the mod set are made, and
-/// `expect` is checked against what the mod showed and changed during the
-/// step. For a server mod, `player`, `chat`, `command`, `break`
+/// `blocks`, `join`, `player`, `clock`, `hold`, `ticks`, `frames`, `chat`,
+/// `command`, `break`, `place`, `leave`; then the blocks the mod set are
+/// made, and `expect` is checked against what the mod showed and changed
+/// during the step. For a server mod, `player`, `chat`, `command`, `break`
 /// and `place` are the doing of the player named by `as`, or of the first
-/// player on.
+/// player on; so are `hold`, `use`, `use-item`, `attack` and `hurt`, which
+/// run in that order between the `chat` and `command` parts.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Step {
@@ -500,6 +797,12 @@ pub struct Step {
     #[serde(rename = "use")]
     used: Option<BlockSet>,
     click: Option<ClickSet>,
+    /// Server mods: the player holds a stack (capability `item-hooks`),
+    /// uses the main hand's item, strikes an entity with it and is hurt.
+    hold: Option<HoldSet>,
+    use_item: Option<UseItemSet>,
+    attack: Option<AttackSet>,
+    hurt: Option<HurtSet>,
     /// Blocks of the Overworld before the rest of the step (capability
     /// `world`); every other block is air.
     #[serde(default)]
@@ -608,6 +911,21 @@ impl Step {
         if let Some(line) = &self.command {
             parts.push(format!("/{line}"));
         }
+        if let Some(hold) = &self.hold {
+            parts.push(format!("holds {} x{}", hold.item, hold.count));
+        }
+        if let Some(use_item) = &self.use_item {
+            parts.push(format!("uses {}", use_item.item));
+        }
+        if let Some(attack) = &self.attack {
+            parts.push(format!(
+                "strikes a {} for {:.1}",
+                attack.kind, attack.damage
+            ));
+        }
+        if self.hurt.is_some() {
+            parts.push("is hurt".to_string());
+        }
         if let Some(name) = &self.join {
             parts.insert(0, format!("{name} joins"));
         }
@@ -640,6 +958,10 @@ impl Step {
             .lend_world(Box::new(ScriptWorld(game.world.clone())));
         let store = std::mem::take(&mut game.block_entities);
         game.mods.lend_block_entities(store);
+        game.mods.lend_player_items(Box::new(ScriptItems {
+            stacks: game.stacks.clone(),
+            written: Vec::new(),
+        }));
         if let Some(name) = &self.join {
             game.join(name);
         }
@@ -660,7 +982,11 @@ impl Step {
             || self.broken.is_some()
             || self.place.is_some()
             || self.click.is_some()
-            || self.used.is_some();
+            || self.used.is_some()
+            || self.hold.is_some()
+            || self.use_item.is_some()
+            || self.attack.is_some()
+            || self.hurt.is_some();
         let actor = if server && acts {
             Some(actor(game)?)
         } else {
@@ -678,6 +1004,10 @@ impl Step {
                 day_time: 0,
             }));
         }
+        if let (Some(hold), Some(i)) = (&self.hold, actor) {
+            let player = game.players[i].clone();
+            game.hold(&player, &hold.item, hold.count, hold.slot.unwrap_or(0));
+        }
         game.tick(self.ticks);
         game.frames(self.frames);
         let who = actor.map(|i| game.players[i].clone());
@@ -694,6 +1024,36 @@ impl Step {
                 z: b.z,
             };
             game.use_block(p, pos, &b.state);
+        }
+        if let (Some(use_item), Some(p)) = (&self.use_item, &who) {
+            let on = use_item.on.as_ref().map(|b| {
+                (
+                    BlockPos {
+                        x: b.x,
+                        y: b.y,
+                        z: b.z,
+                    },
+                    b.state.as_str(),
+                )
+            });
+            game.use_item(p, &use_item.item, use_item.count, on)?;
+        }
+        if let (Some(attack), Some(p)) = (&self.attack, &who) {
+            game.attack_entity(
+                p,
+                &attack.item,
+                attack.count,
+                &attack.kind,
+                attack.health,
+                attack.damage,
+            )?;
+        }
+        if let (Some(hurt), Some(p)) = (&self.hurt, &who) {
+            let source = hurt
+                .source
+                .clone()
+                .unwrap_or_else(|| "minecraft:generic".into());
+            game.hurt_player(p, &source, hurt.amount);
         }
         if let (Some(c), Some(p)) = (&self.click, &who) {
             game.menu_click(p, &c.menu, c.slot, c.button, c.shift);
@@ -720,6 +1080,31 @@ impl Step {
         game.mods.take_world();
         if let Some(store) = game.mods.take_block_entities() {
             game.block_entities = store;
+        }
+        // The stacks the mod wrote its bytes on keep them: the copy was
+        // taken before the step's own holds, so only the writes come home,
+        // onto whatever the step left in the slot.
+        if let Some(view) = game.mods.take_player_items() {
+            let view: Box<dyn std::any::Any> = view;
+            if let Ok(mut items) = view.downcast::<ScriptItems>() {
+                for (player, slot) in std::mem::take(&mut items.written) {
+                    let written = items
+                        .stacks
+                        .get(&player)
+                        .and_then(|slots| slots.get(slot as usize))
+                        .cloned()
+                        .flatten();
+                    if let Some(written) = written
+                        && let Some(held) = game
+                            .stacks
+                            .get_mut(&player)
+                            .and_then(|slots| slots.get_mut(slot as usize))
+                        && held.is_some()
+                    {
+                        *held = Some(written);
+                    }
+                }
+            }
         }
         let out = game.drain();
         let claims = game.mods.block_entity_claims();

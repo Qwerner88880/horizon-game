@@ -1,0 +1,86 @@
+# The energy staff (capability item-hooks): a blaze rod held in the main
+# hand, and a golden helmet worn — their charge is the mod's own bytes on
+# the stack, saved with it wherever it goes.
+
+# The player starts standing on the cell they place: 0 63 0.
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+# The cell gets its buffer in its first tick.
+[[step]]
+ticks = 1
+
+# Fill it, as the menu's Fill button does.
+[[step]]
+command = "cellgui"
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+
+# One blaze rod in the main hand (slot 0), one golden helmet worn (slot 39,
+# head last of the armour).
+[[step]]
+hold = { item = "minecraft:blaze_rod" }
+
+[[step]]
+hold = { item = "minecraft:golden_helmet", slot = 39 }
+
+# A tick standing on the cell charges the staff from it (inventory-tick):
+# the cell holds 1010 FE by then, the staff takes its first 1000, the
+# helmet beside it the 10 left.
+[[step]]
+ticks = 1
+command = "staff"
+expect.feedback = "Staff in slot 0: 1000 / 100000 FE"
+
+# A use in the air spends 100.
+[[step]]
+use-item = { item = "minecraft:blaze_rod" }
+expect.told = ["Alex: The staff has 900 FE left"]
+
+# A blow with it deals twice over, spending 10; the charge survives a
+# restart of the mod, for it is on the stack, not in the mod.
+[[step]]
+attack = { item = "minecraft:blaze_rod", kind = "minecraft:zombie", health = 20.0, damage = 4.0 }
+expect.told = ["Alex: The staff doubles the blow on minecraft:zombie to 8.0"]
+
+[[step]]
+reload = true
+
+[[step]]
+command = "staff"
+expect.feedback = "Staff in slot 0: 890 / 100000 FE"
+
+# A use on the cell moves energy between the two: the staff the fuller,
+# all it has goes into the cell (empty since the helmet took its last 10).
+[[step]]
+use-item = { item = "minecraft:blaze_rod", on = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" } }
+expect.told = ["Alex: 890 FE into the cell (890 FE)"]
+
+[[step]]
+command = "staff"
+expect.feedback = "Staff in slot 0: 0 / 100000 FE"
+
+# The helmet's 10 FE take a hurt each: the fixed share, an FE a point.
+[[step]]
+hurt = { amount = 10.0, source = "minecraft:fireworks" }
+expect.told = ["Alex: The helmet takes 5.0 of 10.0 minecraft:fireworks"]
+
+[[step]]
+hurt = { amount = 10.0, source = "minecraft:fireworks" }
+expect.told = ["Alex: The helmet takes 5.0 of 10.0 minecraft:fireworks"]
+
+# Out of charge, it takes nothing and says so.
+[[step]]
+hurt = { amount = 10.0, source = "minecraft:fireworks" }
+expect.told = ["Alex: The helmet is out of charge"]
+
+# A stack of rods carries no charge: a split copies a stack's components
+# to both halves, so charge would double.
+[[step]]
+hold = { item = "minecraft:blaze_rod", count = 64 }
+
+[[step]]
+use-item = { item = "minecraft:blaze_rod", count = 64 }
+expect.told = ["Alex: Stack the staff one by one: its charge is kept on the item"]
