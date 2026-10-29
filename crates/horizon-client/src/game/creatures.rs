@@ -3264,6 +3264,11 @@ impl Game<'_> {
                 return Ok(false);
             }
         }
+        // A mob of a mod that takes the use: the mod hears the click.
+        if self.mod_entity_use(index) {
+            self.swing_arm();
+            return Ok(true);
+        }
         if self.name_mob(index) {
             return Ok(true);
         }

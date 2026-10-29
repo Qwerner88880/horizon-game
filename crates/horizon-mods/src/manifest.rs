@@ -131,9 +131,12 @@ pub enum Capability {
     /// Messages between the two halves of one mod, the server's and the
     /// player's game (server mods and client mods).
     Network,
+    /// Mobs of the mod's own: vanilla mobs it marks, steers, hurts and
+    /// removes (server mods).
+    Entities,
 }
 impl Capability {
-    pub const ALL: [Capability; 22] = [
+    pub const ALL: [Capability; 23] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -156,6 +159,7 @@ impl Capability {
         Capability::SavedData,
         Capability::ItemHooks,
         Capability::Network,
+        Capability::Entities,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's.
@@ -179,6 +183,7 @@ impl Capability {
                 | Capability::SavedData
                 | Capability::ItemHooks
                 | Capability::Network
+                | Capability::Entities
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -206,6 +211,7 @@ impl Capability {
             Capability::SavedData => "saved-data",
             Capability::ItemHooks => "item-hooks",
             Capability::Network => "network",
+            Capability::Entities => "entities",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -227,6 +233,7 @@ impl Capability {
                 | Capability::SavedData
                 | Capability::ItemHooks
                 | Capability::Network
+                | Capability::Entities
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -267,6 +274,9 @@ impl Capability {
             }
             Capability::Network => {
                 "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::Entities => {
+                "spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die"
             }
         }
     }
@@ -319,6 +329,7 @@ impl fmt::Display for Capability {
             Capability::SavedData => "saved-data",
             Capability::ItemHooks => "item-hooks",
             Capability::Network => "network",
+            Capability::Entities => "entities",
         };
         f.write_str(name)
     }

@@ -207,6 +207,7 @@ pub mod server {
     pub use crate::network;
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
+    pub use exports::horizon::mods::entity_events::Guest as __EntityGuest;
     pub use exports::horizon::mods::item_events::{
         Entity, Guest as __ItemGuest, PlayerStack, UsedBlock as ItemUsedBlock,
     };
@@ -220,6 +221,7 @@ pub mod server {
     pub use horizon::mods::block_entities;
     pub use horizon::mods::displays::{self, Shape, Transform};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
+    pub use horizon::mods::entities::{self, Entity as ModEntity, SpawnOptions};
     pub use horizon::mods::item_hooks::{self, HeldStack};
     pub use horizon::mods::items::{self, Stack};
     pub use horizon::mods::machine_recipes;
@@ -314,6 +316,29 @@ pub mod server {
         /// `data` on `channel` (capability `network`); answer with
         /// [`network::send_to`].
         fn client_message(&mut self, _player: &Player, _channel: &str, _data: &[u8]) {}
+        /// Each server tick (capability `entities`): the mod's own mobs in the
+        /// level, up to 512. Steer them with [`entities::teleport`] and
+        /// friends.
+        fn entity_tick(&mut self, _tick: u64, _entities: &[ModEntity]) {}
+        /// A player's blow is about to hurt one of the mod's mobs: answer
+        /// with the damage to deal instead (0 cancels; never above four
+        /// times). Only players' blows come here.
+        fn entity_hurt(
+            &mut self,
+            _player: &Player,
+            _entity: &ModEntity,
+            damage: f32,
+        ) -> Result<f32, String> {
+            Ok(damage)
+        }
+        /// One of the mod's mobs died: told once, as it starts to fall.
+        fn entity_died(&mut self, _entity: &ModEntity) {}
+        /// One of the mod's mobs is gone (after its death, removed or
+        /// despawned): its last state.
+        fn entity_removed(&mut self, _entity: &ModEntity) {}
+        /// A player right-clicked a mob that takes the use
+        /// ([`SpawnOptions::takes_use`]).
+        fn entity_used(&mut self, _player: &Player, _entity: &ModEntity) {}
         /// The same click with the crosshair on a block, after the block's
         /// own vanilla use passed.
         fn item_used_on_block(
@@ -350,6 +375,60 @@ pub mod server {
             _source: &str,
         ) -> Result<f32, String> {
             Ok(0.0)
+        }
+    }
+
+    impl SpawnOptions {
+        /// A mob of vanilla kind `kind` (`minecraft:iron_golem`) the mod calls
+        /// `tag`, with everything off and its kind's full health.
+        pub fn new(kind: &str, tag: &str) -> Self {
+            Self {
+                kind: kind.into(),
+                tag: tag.into(),
+                no_ai: false,
+                invisible: false,
+                silent: false,
+                invulnerable: false,
+                no_gravity: false,
+                takes_use: false,
+                name: None,
+                health: None,
+            }
+        }
+        /// No goals and no movement of its own: the mod moves it.
+        pub fn no_ai(mut self) -> Self {
+            self.no_ai = true;
+            self
+        }
+        /// Its model hidden, for display models to stand in.
+        pub fn invisible(mut self) -> Self {
+            self.invisible = true;
+            self
+        }
+        pub fn silent(mut self) -> Self {
+            self.silent = true;
+            self
+        }
+        pub fn invulnerable(mut self) -> Self {
+            self.invulnerable = true;
+            self
+        }
+        pub fn no_gravity(mut self) -> Self {
+            self.no_gravity = true;
+            self
+        }
+        /// Right clicks reach [`ServerMod::entity_used`] and do nothing else.
+        pub fn takes_use(mut self) -> Self {
+            self.takes_use = true;
+            self
+        }
+        pub fn named(mut self, name: &str) -> Self {
+            self.name = Some(name.into());
+            self
+        }
+        pub fn health(mut self, health: f32) -> Self {
+            self.health = Some(health);
+            self
         }
     }
 
@@ -652,6 +731,29 @@ macro_rules! export_server_mod {
                 }
                 fn broken(block: $crate::server::Multiblock) {
                     with(|m| m.multiblock_broken(&block))
+                }
+            }
+            impl $crate::server::__EntityGuest for Export {
+                fn tick(tick: u64, entities: Vec<$crate::server::ModEntity>) {
+                    with(|m| m.entity_tick(tick, &entities))
+                }
+                fn hurt(
+                    player: Player,
+                    entity: $crate::server::ModEntity,
+                    damage: f32,
+                ) -> Result<f32, String> {
+                    let mut out = Ok(damage);
+                    with(|m| out = m.entity_hurt(&player, &entity, damage));
+                    out
+                }
+                fn died(entity: $crate::server::ModEntity) {
+                    with(|m| m.entity_died(&entity))
+                }
+                fn removed(entity: $crate::server::ModEntity) {
+                    with(|m| m.entity_removed(&entity))
+                }
+                fn used(player: Player, entity: $crate::server::ModEntity) {
+                    with(|m| m.entity_used(&player, &entity))
                 }
             }
             impl $crate::server::__NetGuest for Export {

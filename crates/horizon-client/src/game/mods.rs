@@ -89,6 +89,14 @@ pub(super) struct ModsState {
     /// Capability `network`: the messages each connection sent this tick.
     #[cfg(feature = "mods")]
     pub(super) net_counts: std::collections::HashMap<u32, u32>,
+    /// Capability `entities`: which mobs are mods', their last state, the
+    /// mobs as the last scan found them, and the kinds a mod may spawn.
+    #[cfg(feature = "mods")]
+    pub(super) mod_entities: super::server_mods::ModEntityBook,
+    #[cfg(feature = "mods")]
+    pub(super) entity_live: Vec<horizon_mods::EntityInfo>,
+    #[cfg(feature = "mods")]
+    pub(super) entity_kinds: Option<std::sync::Arc<std::collections::HashSet<String>>>,
     /// Capability `items`: stacks to drop, by dimension, made in that level;
     /// and every item's stack size, for the mods' inventories.
     #[cfg(feature = "mods")]
@@ -783,6 +791,11 @@ impl Game<'_> {
                 | Output::OpenMenu { .. }
                 | Output::DropItems { .. }
                 | Output::NetToClient { .. }
+                | Output::SpawnEntity { .. }
+                | Output::TeleportEntity { .. }
+                | Output::PushEntity { .. }
+                | Output::SetEntityHealth { .. }
+                | Output::RemoveEntity { .. }
                 | Output::SetMenuItems { .. }
                 | Output::CloseMenu { .. }
                 | Output::ShowDisplay { .. }

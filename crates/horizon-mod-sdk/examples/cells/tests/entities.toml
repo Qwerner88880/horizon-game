@@ -1,0 +1,41 @@
+# Capability entities: /sentinel spawns an iron golem of the mod's own. It
+# takes a third of a player's blow, mends a point of health a second, answers
+# a right click with its health, and the server hears when it falls.
+
+# the sentinel two blocks east (the player starts at 0.5 64 0.5).
+[[step]]
+join = "Alex"
+command = "sentinel"
+expect.feedback = "A sentinel stands guard (entity 1000)"
+expect.entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=20"]
+
+# A blow of 6 lets 2 through.
+[[step]]
+strike = { tag = "sentinel", damage = 6.0 }
+expect.dealt = 2.0
+expect.entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=18"]
+
+# A second of ticks mends a point.
+[[step]]
+ticks = 20
+expect.entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=19"]
+
+# A right click is answered with its health.
+[[step]]
+interact = { tag = "sentinel" }
+expect.told = ["Alex: The sentinel salutes you: 19 / 20 health"]
+
+# A blow that kills: the mod hears its death a tick later, the body goes a
+# tick after.
+[[step]]
+strike = { tag = "sentinel", damage = 60.0 }
+expect.dealt = 20.0
+expect.entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=0 dying"]
+
+[[step]]
+ticks = 1
+expect.broadcast = ["A sentinel fell at 2 64 0"]
+
+[[step]]
+ticks = 1
+expect.entities = []

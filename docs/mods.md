@@ -281,7 +281,12 @@ expect.feedback = "Coordinates panel hidden"
 
 A step's parts happen in this order: `reload`, `title-screen`, `blocks`,
 `join`, `player`, `clock`, `hold`, `ticks`, `frames`, `chat`, then — for
-a server mod — `use`, `use-item`, `attack` and `hurt` (`use-item = { item =
+a server mod — `use`, `use-item`, `attack`, `hurt`, `strike` and `interact` (`strike = {
+tag = "sentinel", damage = 6.0 }` has the player hit the mod's mob of that
+tag, `interact = { tag = "sentinel" }` right-click it; `expect.dealt` is the
+damage its mod let through; the mobs of a test have 20 health, ids from 1000,
+and may be a zombie, skeleton, creeper, iron golem, cow, pig, sheep or
+villager) (`use-item = { item =
 "minecraft:blaze_rod", on = { x = 0, y = 63, z = 0, state =
 "minecraft:lodestone" } }` uses the main hand's stack in the air or on a
 block, `attack = { item = ..., kind = "minecraft:zombie", health = 20.0,
@@ -321,6 +326,7 @@ checked:
 | `panel = ["..."]`, `corner = "top-left"` | its HUD panel's lines (`[]`: no panel) and corner |
 | `told = ["Alex: Welcome!"]`, `broadcast = ["..."]` | server mods: every `players.tell` (as `name: text`) and `players.broadcast`, in order |
 | `blocks = [{ x = 2, y = 64, z = 0, state = "minecraft:glowstone" }]` | server mods with `world`: those blocks of the Overworld after the step, the mod's `set-blocks` made (the script checks a state's shape; the game checks its name) |
+| `entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=20"]`, `dealt = 2.0` | server mods with `entities`: the mods' mobs after the step as `tag kind x y z hp=health` (` dying` after it for a body), ordered by id; and the damage the step's `strike` dealt |
 | `stopped = "panic"` | the mod was turned off, for a reason holding this text; without it, a mod that traps, panics or overruns fails the test |
 
 Unknown keys are errors, so a typo never passes silently. The same runner is
@@ -951,6 +957,72 @@ fallback); the half running in in-frame single player (the server mod and
 its client half would share an id in one game); screens beyond the `ui`
 widgets (text, buttons, item rows, lists: no free layout, textures or
 sliders); mod messages through a proxy that drops unknown payloads.
+
+#### Mobs of the mod (capability `entities`, experimental)
+
+A server mod spawns mobs of its own: **vanilla mobs the mod marks and then
+steers** (a zombie, an iron golem, a cow — any mob kind the game knows). The
+game runs them as it runs every mob: hitbox, physics, damage, knockback,
+loot, saving. The mod chooses what they are and what they do. This is how a
+mod gets a guardian, a drone or a boss without a mob model of its own: pick
+the closest vanilla body, switch off its AI (`no_ai`), hide it (`invisible`)
+and put display models over it (capability `displays`), or leave it be.
+
+```rust
+use horizon_mod_sdk::server::{entities, ModEntity, SpawnOptions};
+
+let id = entities::spawn(
+    "minecraft:overworld", x, y, z,
+    &SpawnOptions::new("minecraft:iron_golem", "sentinel")
+        .takes_use()
+        .named("Sentinel"),
+)?; // its entity id, known at once
+```
+
+- **Spawning.** `entities::spawn(dimension, x, y, z, options)` returns the
+  mob's entity id, known at once; the mob exists from the end of the call.
+  `SpawnOptions::new(kind, tag)` is a vanilla kind (`minecraft:zombie`) and
+  the mod's own name for it (`[a-z0-9_./-]`, up to 64 characters), then
+  `.no_ai()` (no goals and no movement of its own: the mod moves it),
+  `.invisible()`, `.silent()`, `.invulnerable()`, `.no_gravity()`,
+  `.takes_use()` (a right click reaches `entity_used` and does nothing
+  else, unless the player is sneaking), `.named(text)` (shown over it) and
+  `.health(h)`. A mod has at most 1024 mobs and spawns 32 a call. A spawn
+  fails for an unknown kind, a bad tag, another dimension than the one the
+  server simulates (for now), and **in the hooks the game runs mid-tick**
+  (`entity_hurt` and the item hooks' blows): the error says so. Everything
+  else spawns: commands, ticks, joins, menu clicks, block events.
+- **Steering.** `entities::get(id)`, `list()` (the mod's own mobs, as of the
+  start of the call), `teleport(id, x, y, z)` (the way to move a mob with
+  its AI off), `push(id, x, y, z)` (adds a velocity), `set_health(id, h)`
+  (0 kills it) and `remove(id)` (no death, no loot). A mod acts on its own
+  mobs only; the rest are an error.
+- **Events.** `ServerMod::entity_tick(tick, mobs)` each tick (up to 512
+  mobs, the first by id), `entity_hurt(player, mob, damage)` when a
+  **player's** blow is about to hurt it (answer with the damage to deal: `0`
+  cancels, never more than four times; an error cancels nothing, other
+  damage lands as vanilla has it), `entity_died(mob)` once as it starts to
+  fall (whatever killed it), `entity_removed(mob)` when it is gone (after
+  its death, removed or despawned; its last state) and `entity_used(player,
+  mob)` for a right click on a mob that takes the use. Each mob a hook gets
+  carries its id, kind, tag, dimension, position, yaw, health and full
+  health, and whether it is `dying`.
+- **Marks.** The game finds a mod's mobs by marks in the mob's saved data
+  (`Tags`: `horizon_mod:<id>`, `horizon_tag:<tag>`, `horizon_use`), so the
+  mod hears its mobs again after a restart. A mod that is turned off leaves
+  its mobs standing as plain mobs; they are its again when the world is
+  next loaded with it on.
+
+The `cells` example's `/sentinel` spawns an iron golem, tag `sentinel`,
+named, that takes a third of a player's blow (`entity_hurt`), mends a point
+of health a second (`entity_tick` and `set_health`), answers a right click
+with its health and tells the server when it falls.
+
+**Not yet.** Hooks for damage that is not a player's blow (fire, a fall,
+another mob's attack); mobs of other dimensions than the one the server
+simulates; the mod's own AI goals (it moves a mob with `teleport` and `push`
+each tick); mobs that are not vanilla kinds (a model of its own: use display
+models).
 
 ## Publish your mod
 

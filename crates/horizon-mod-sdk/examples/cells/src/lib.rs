@@ -29,10 +29,10 @@
 //! at a time — their charge is the mod's own bytes on the stack, saved
 //! with it wherever it goes.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, Multiblock,
-    Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, Stack, Transform, UsedBlock,
-    block_entities, displays, energy, item_hooks, items, machine_recipes, menus, multiblocks,
-    network, players, saved_data,
+    Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
+    Multiblock, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
+    Transform, UsedBlock, block_entities, displays, energy, entities, item_hooks, items,
+    machine_recipes, menus, multiblocks, network, players, saved_data,
 };
 use std::collections::BTreeMap;
 
@@ -45,6 +45,20 @@ const CAPACITY: u64 = 100_000;
 const CORE_CHARGE: u64 = 10;
 /// Energy that may flow between two cells side by side each tick.
 const FLOW: u64 = 100;
+
+/// The mob `/sentinel` spawns (capability `entities`): an iron golem the mod
+/// calls `sentinel`. It takes a third of the damage a player's blow deals,
+/// mends a point of health a second, answers a right click with its health
+/// and tells the server when it falls.
+const SENTINEL: &str = "sentinel";
+const SENTINEL_KIND: &str = "minecraft:iron_golem";
+/// Ticks between two points of health a sentinel mends.
+const MEND_EVERY: u64 = 20;
+
+/// The damage a sentinel lets a player's blow deal.
+fn sentinel_damage(damage: f32) -> f32 {
+    damage / 3.0
+}
 
 /// The cell each player's open menu shows, by player id.
 #[derive(Default)]
@@ -505,6 +519,7 @@ impl ServerMod for Cells {
                 .command_with("cellcore", [Argument::block_pos("pos").optional()])
                 .command_with("cellnet", [Argument::word("name").optional()])
                 .command_with("cellrecipes", [])
+                .command_with("sentinel", [])
                 .command_with("staff", []),
         ))
     }
@@ -673,6 +688,20 @@ impl ServerMod for Cells {
     ) -> Result<Option<String>, String> {
         if name == "cellrecipes" {
             return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
+        }
+        if name == "sentinel" {
+            // Capability `entities`: a mob of the mod, two blocks from the
+            // player, that takes right clicks and has a name over it.
+            let id = entities::spawn(
+                &player.dimension,
+                player.x + 2.0,
+                player.y,
+                player.z,
+                &SpawnOptions::new(SENTINEL_KIND, SENTINEL)
+                    .takes_use()
+                    .named("Sentinel"),
+            )?;
+            return Ok(Some(format!("A sentinel stands guard (entity {id})")));
         }
         if name == "staff" {
             // The staff in the main hand (capability `item-hooks`): a hook
@@ -988,6 +1017,47 @@ impl ServerMod for Cells {
         let _ = network::send_to(&player.id, "cells/state", state.as_bytes());
     }
 
+    fn entity_tick(&mut self, tick: u64, mobs: &[ModEntity]) {
+        if tick % MEND_EVERY != 0 {
+            return;
+        }
+        for m in mobs {
+            if m.tag == SENTINEL && !m.dying && m.health < m.max_health {
+                let _ = entities::set_health(m.id, (m.health + 1.0).min(m.max_health));
+            }
+        }
+    }
+
+    fn entity_hurt(
+        &mut self,
+        _player: &Player,
+        entity: &ModEntity,
+        damage: f32,
+    ) -> Result<f32, String> {
+        Ok(if entity.tag == SENTINEL {
+            sentinel_damage(damage)
+        } else {
+            damage
+        })
+    }
+
+    fn entity_died(&mut self, entity: &ModEntity) {
+        players::broadcast(&format!(
+            "A sentinel fell at {:.0} {:.0} {:.0}",
+            entity.x, entity.y, entity.z
+        ));
+    }
+
+    fn entity_used(&mut self, player: &Player, entity: &ModEntity) {
+        players::tell(
+            &player.id,
+            &format!(
+                "The sentinel salutes you: {} / {} health",
+                entity.health, entity.max_health
+            ),
+        );
+    }
+
     fn player_left(&mut self, player: &Player) {
         self.open.remove(&player.id);
         self.screens.remove(&player.id);
@@ -1029,6 +1099,12 @@ horizon_mod_sdk::export_server_mod!(Cells);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sentinel_takes_a_third_of_a_blow() {
+        assert_eq!(sentinel_damage(6.0), 2.0);
+        assert_eq!(sentinel_damage(0.0), 0.0);
+    }
 
     #[test]
     fn the_core_turns_about_its_centre() {

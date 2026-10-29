@@ -114,6 +114,75 @@ mod use_bindings {
 }
 use menu_bindings::{MenuHost, horizon::mods::menus};
 use use_bindings::{UseHost, exports::horizon::mods::block_use_events::UsedBlock};
+/// Capability `entities`' world: its own, so server mods built before it (no
+/// `entity-events` export) still load. `players` is the server world's.
+mod entity_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "entity-host",
+        additional_derives: [PartialEq],
+        with: {
+            "horizon:mods/players": super::server_bindings::horizon::mods::players,
+        },
+    });
+}
+/// A mob's options at spawn, as the mod gave them.
+pub use entity_bindings::horizon::mods::entities::SpawnOptions as EntitySpawn;
+use entity_bindings::{EntityHost, horizon::mods::entities};
+/// Mobs one mod may have, and spawn in one call.
+pub const MAX_ENTITIES: usize = 1024;
+const SPAWNS_PER_CALL: u32 = 32;
+/// Mobs one `tick` call is told of.
+const ENTITIES_PER_TICK: usize = 512;
+
+/// One mob of a mod, as the game tells it and the mod reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityInfo {
+    pub id: u32,
+    pub owner: String,
+    pub kind: String,
+    pub tag: String,
+    pub dimension: String,
+    pub pos: [f64; 3],
+    pub yaw: f32,
+    pub health: f32,
+    pub max_health: f32,
+    pub dying: bool,
+}
+impl EntityInfo {
+    fn to_wit(&self) -> entities::Entity {
+        entities::Entity {
+            id: self.id,
+            kind: self.kind.clone(),
+            tag: self.tag.clone(),
+            dimension: self.dimension.clone(),
+            x: self.pos[0],
+            y: self.pos[1],
+            z: self.pos[2],
+            yaw: self.yaw,
+            health: self.health,
+            max_health: self.max_health,
+            dying: self.dying,
+        }
+    }
+}
+/// The mobs lent to the mods for their calls, with what spawning needs: the
+/// game lends one with [`Mods::lend_entities`] and takes it back after.
+#[derive(Clone, Debug, Default)]
+pub struct EntityState {
+    /// The next entity id a spawn takes (the game sets its own after).
+    pub next_id: u32,
+    /// The dimension the server is simulating.
+    pub dimension: String,
+    /// Whether the game applies a spawn right after the call.
+    pub can_spawn: bool,
+    /// The mob kinds the game can spawn, `minecraft:zombie`.
+    pub kinds: Arc<std::collections::HashSet<String>>,
+    /// Every mob of every mod.
+    pub entities: Vec<EntityInfo>,
+}
+/// The state lent for the current calls, shared by every mod's store.
+type EntityStateSlot = Arc<Mutex<Option<EntityState>>>;
 /// Capability `network`'s worlds, one for each side: their own, so mods built
 /// before it (no `network-events` / `network-client-events` export) still
 /// load. The server's takes `players` from the server world, and the
@@ -358,17 +427,31 @@ impl Runs {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
     /// `chat.show`: a line after the mod's name.
-    Chat { name: String, text: String },
+    Chat {
+        name: String,
+        text: String,
+    },
     /// A mod command's feedback, red when `error`.
-    Feedback { text: String, error: bool },
+    Feedback {
+        text: String,
+        error: bool,
+    },
     /// `command.run`: a vanilla command line, without its slash, to run as
     /// the player.
-    Command { line: String },
+    Command {
+        line: String,
+    },
     /// `command.run-quiet`: vanilla command lines to run as the player with
     /// nothing in the chat (`horizon_protocol::quiet` on a server).
-    QuietCommands { mod_id: String, lines: Vec<String> },
+    QuietCommands {
+        mod_id: String,
+        lines: Vec<String>,
+    },
     /// The mod was turned off: it trapped, overran or failed to start.
-    Stopped { name: String, reason: String },
+    Stopped {
+        name: String,
+        reason: String,
+    },
     /// `players.tell`: a line after the mod's name, to the player with this id.
     Tell {
         name: String,
@@ -376,7 +459,10 @@ pub enum Output {
         text: String,
     },
     /// `players.broadcast`: a line after the mod's name, to every player.
-    Broadcast { name: String, text: String },
+    Broadcast {
+        name: String,
+        text: String,
+    },
     /// A server mod command's feedback, to the player who typed it.
     Reply {
         player: String,
@@ -392,14 +478,24 @@ pub enum Output {
     },
     /// `ui.open-screen`: the mod's entry in `entries()`; what it shows is
     /// [`Mods::screen`].
-    OpenScreen { owner: usize },
+    OpenScreen {
+        owner: usize,
+    },
     /// `ui.close-screen`: the mod closed its own screen (no `closed` back).
-    CloseScreen { owner: usize },
+    CloseScreen {
+        owner: usize,
+    },
     /// `render.shake`: strength 0 to 1, fading out over `seconds` (≤ 10).
-    Shake { strength: f32, seconds: f32 },
+    Shake {
+        strength: f32,
+        seconds: f32,
+    },
     /// `recipes.place`: the recipe book's click on this display id, all of
     /// it when `all`.
-    PlaceRecipe { book_id: i32, all: bool },
+    PlaceRecipe {
+        book_id: i32,
+        all: bool,
+    },
     /// `menus.open`: a chest menu of mod `mod_id` for the player with this
     /// id, its slots checked against its rows.
     OpenMenu {
@@ -427,7 +523,10 @@ pub enum Output {
         items: Vec<MenuItem>,
     },
     /// `menus.close`: that player's menu of mod `mod_id`, if open.
-    CloseMenu { mod_id: String, player: String },
+    CloseMenu {
+        mod_id: String,
+        player: String,
+    },
     /// `displays.show`: mod `mod_id`'s display `name`, shown or changed.
     ShowDisplay {
         mod_id: String,
@@ -439,7 +538,10 @@ pub enum Output {
         interpolation: u32,
     },
     /// `displays.hide`.
-    HideDisplay { mod_id: String, name: String },
+    HideDisplay {
+        mod_id: String,
+        name: String,
+    },
     /// `network.send-to`: a message of server mod `mod_id` to the player
     /// with this id.
     NetToClient {
@@ -453,6 +555,34 @@ pub enum Output {
         mod_id: String,
         channel: String,
         data: Vec<u8>,
+    },
+    /// `entities.spawn`: a mob of mod `mod_id` with the entity id it was
+    /// promised, at a position.
+    SpawnEntity {
+        mod_id: String,
+        id: u32,
+        pos: [f64; 3],
+        options: EntitySpawn,
+    },
+    /// `entities.teleport`, `push` (a velocity), `set-health` and `remove`.
+    TeleportEntity {
+        mod_id: String,
+        id: u32,
+        pos: [f64; 3],
+    },
+    PushEntity {
+        mod_id: String,
+        id: u32,
+        velocity: [f64; 3],
+    },
+    SetEntityHealth {
+        mod_id: String,
+        id: u32,
+        health: f32,
+    },
+    RemoveEntity {
+        mod_id: String,
+        id: u32,
     },
     /// `recipes.give`: a stack for a creative player.
     Give {
@@ -582,6 +712,8 @@ struct Running {
     /// the `network-client-events` of a client mod.
     net_server: Option<NetServerHost>,
     net_client: Option<NetClientHost>,
+    /// Capability `entities`: the `entity-events` export.
+    entities: Option<EntityHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -703,6 +835,9 @@ struct State {
     item_writes: u32,
     /// A server mod (`network.send-to`) or a client mod (`network.send`).
     server: bool,
+    /// Capability `entities`' lent mobs, and the spawns this call made.
+    mod_entities: EntityStateSlot,
+    entity_spawns: u32,
     /// Messages and bytes this hook call has sent (reset per call).
     net_sent: (u32, usize),
 }
@@ -720,6 +855,8 @@ pub struct Mods {
     machine_recipes: RecipeSlot,
     multiblocks: TemplateSlot,
     player_items: PlayerSlot,
+    /// Capability `entities`' lent mobs.
+    mod_entities: EntityStateSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -1104,6 +1241,136 @@ impl Mods {
             None => Ok(()),
         });
     }
+    /// Lends the game's mobs to capability `entities` for the calls until
+    /// [`Mods::take_entities`]; with none lent, its functions fail.
+    pub fn lend_entities(&mut self, state: EntityState) {
+        if let Ok(mut slot) = self.mod_entities.lock() {
+            *slot = Some(state);
+        }
+    }
+    /// The state [`Mods::lend_entities`] lent, back to the game (its
+    /// `next_id` says how many ids the mods promised).
+    pub fn take_entities(&mut self) -> Option<EntityState> {
+        self.mod_entities.lock().ok()?.take()
+    }
+    /// Whether a running mod may spawn and steer mobs: only then are the
+    /// game's mobs worth scanning for marks.
+    pub fn wants_entities(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.entities.is_some()))
+    }
+    /// Whether mod `mod_id` runs here and hears events of its mobs.
+    pub fn hears_entities(&self, mod_id: &str) -> bool {
+        self.running_index(mod_id)
+            .and_then(|i| self.entries[i].run.as_ref())
+            .is_some_and(|r| r.entities.is_some())
+    }
+    /// Takes the outputs of capability `entities` out of the queue, leaving
+    /// the others: for a game that applies mobs between calls (the test
+    /// game).
+    pub fn take_entity_outputs(&mut self) -> Vec<Output> {
+        let (mine, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.out).into_iter().partition(|o| {
+                matches!(
+                    o,
+                    Output::SpawnEntity { .. }
+                        | Output::TeleportEntity { .. }
+                        | Output::PushEntity { .. }
+                        | Output::SetEntityHealth { .. }
+                        | Output::RemoveEntity { .. }
+                )
+            });
+        self.out = rest;
+        mine
+    }
+    /// Each server tick: every mod told of its own mobs (`entities` is all
+    /// the mods' mobs).
+    pub fn entity_tick(&mut self, tick: u64, entities: &[EntityInfo]) {
+        for i in 0..self.entries.len() {
+            let Some(run) = self.entries[i].run.as_ref() else {
+                continue;
+            };
+            if run.entities.is_none() {
+                continue;
+            }
+            let id = run.store.data().id.clone();
+            let own: Vec<entities::Entity> = entities
+                .iter()
+                .filter(|e| e.owner == id)
+                .take(ENTITIES_PER_TICK)
+                .map(EntityInfo::to_wit)
+                .collect();
+            if own.is_empty() {
+                continue;
+            }
+            self.call(i, FUEL_TICK, |run| match &run.entities {
+                Some(h) => h
+                    .horizon_mods_entity_events()
+                    .call_tick(&mut run.store, tick, &own),
+                None => Ok(()),
+            });
+        }
+    }
+    /// A player's blow is about to hurt `entity`: the damage its mod answers
+    /// (never over four times `damage`, never below 0); `damage` when the
+    /// mod doesn't hear or fails.
+    pub fn entity_hurt(&mut self, player: &ServerPlayer, entity: &EntityInfo, damage: f32) -> f32 {
+        let Some(i) = self.running_index(&entity.owner) else {
+            return damage;
+        };
+        let wit = entity.to_wit();
+        let answered = self.call(i, FUEL_EVENT, |run| match &run.entities {
+            Some(h) => {
+                h.horizon_mods_entity_events()
+                    .call_hurt(&mut run.store, player, &wit, damage)
+            }
+            None => Ok(Ok(damage)),
+        });
+        match answered {
+            Some(Ok(d)) if d.is_finite() => d.clamp(0.0, damage * 4.0),
+            _ => damage,
+        }
+    }
+    /// `entity` died.
+    pub fn entity_died(&mut self, entity: &EntityInfo) {
+        let Some(i) = self.running_index(&entity.owner) else {
+            return;
+        };
+        let wit = entity.to_wit();
+        self.call(i, FUEL_EVENT, |run| match &run.entities {
+            Some(h) => h
+                .horizon_mods_entity_events()
+                .call_died(&mut run.store, &wit),
+            None => Ok(()),
+        });
+    }
+    /// `entity` is gone; it is its last state.
+    pub fn entity_removed(&mut self, entity: &EntityInfo) {
+        let Some(i) = self.running_index(&entity.owner) else {
+            return;
+        };
+        let wit = entity.to_wit();
+        self.call(i, FUEL_EVENT, |run| match &run.entities {
+            Some(h) => h
+                .horizon_mods_entity_events()
+                .call_removed(&mut run.store, &wit),
+            None => Ok(()),
+        });
+    }
+    /// `player` right-clicked `entity`.
+    pub fn entity_used(&mut self, player: &ServerPlayer, entity: &EntityInfo) {
+        let Some(i) = self.running_index(&entity.owner) else {
+            return;
+        };
+        let wit = entity.to_wit();
+        self.call(i, FUEL_EVENT, |run| match &run.entities {
+            Some(h) => h
+                .horizon_mods_entity_events()
+                .call_used(&mut run.store, player, &wit),
+            None => Ok(()),
+        });
+    }
     /// The client half of mod `mod_id` sent `data` on `channel` (the game
     /// has read and checked the message): the server mod hears it.
     pub fn net_client_sent(
@@ -1477,6 +1744,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             network::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -1520,6 +1789,7 @@ impl Mods {
         let machine_recipes = self.machine_recipes.clone();
         let multiblocks = self.multiblocks.clone();
         let player_items = self.player_items.clone();
+        let mod_entities = self.mod_entities.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -1584,6 +1854,8 @@ impl Mods {
             item_writes: 0,
             server,
             net_sent: (0, 0),
+            mod_entities,
+            entity_spawns: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1695,6 +1967,12 @@ impl Mods {
                 items = Some((host, claimed));
             }
         }
+        // `entity-events`: a server mod built before the capability has no
+        // export and keeps working, hearing nothing of its mobs.
+        let entity_export = match server && m.capabilities.contains(&crate::Capability::Entities) {
+            true => EntityHost::new(&mut store, &instance).ok(),
+            false => None,
+        };
         // `network-events` / `network-client-events`: a mod built before the
         // capability has no export and keeps working, hearing nothing.
         let wants_net = m.capabilities.contains(&crate::Capability::Network);
@@ -1722,6 +2000,7 @@ impl Mods {
             items,
             net_server,
             net_client,
+            entities: entity_export,
         }))
     }
 
@@ -1806,6 +2085,7 @@ impl Mods {
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         run.store.data_mut().item_writes = 0;
         run.store.data_mut().net_sent = (0, 0);
+        run.store.data_mut().entity_spawns = 0;
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
         // An average over about the last 64 calls.
@@ -2722,6 +3002,180 @@ impl displays::Host for State {
             mod_id: self.id.clone(),
             name,
         });
+    }
+}
+/// A mob tag: `[a-z0-9_./-]{1,64}`.
+fn entity_tag_ok(tag: &str) -> bool {
+    horizon_protocol_name_ok(tag)
+}
+impl State {
+    /// The lent mobs, for capability `entities`.
+    fn with_entities<R>(&self, f: impl FnOnce(&mut EntityState, &str) -> R) -> Result<R, String> {
+        let mut slot = self
+            .mod_entities
+            .lock()
+            .map_err(|_| "mobs are unavailable".to_string())?;
+        let state = slot
+            .as_mut()
+            .ok_or("mobs are kept only during server hooks")?;
+        Ok(f(state, &self.id))
+    }
+    /// The mod's own mob `id` (error otherwise).
+    fn own_entity(&self, id: u32) -> Result<EntityInfo, String> {
+        self.with_entities(|s, me| {
+            s.entities
+                .iter()
+                .find(|e| e.id == id && e.owner == me)
+                .cloned()
+        })?
+        .ok_or_else(|| format!("no mob {id} of this mod"))
+    }
+}
+impl entities::Host for State {
+    fn spawn(
+        &mut self,
+        dimension: String,
+        x: f64,
+        y: f64,
+        z: f64,
+        options: EntitySpawn,
+    ) -> Result<u32, String> {
+        if ![x, y, z].iter().all(|v| v.is_finite()) {
+            return Err("a position must be finite".into());
+        }
+        if !entity_tag_ok(&options.tag) {
+            return Err(format!("tag {:?} is not [a-z0-9_./-]{{1,64}}", options.tag));
+        }
+        if options
+            .name
+            .as_ref()
+            .is_some_and(|n| n.chars().count() > 64)
+        {
+            return Err("a name is up to 64 characters".into());
+        }
+        if options.health.is_some_and(|h| !h.is_finite() || h <= 0.0) {
+            return Err("health must be above 0".into());
+        }
+        if self.entity_spawns >= SPAWNS_PER_CALL {
+            return Err(format!("at most {SPAWNS_PER_CALL} spawns in one call"));
+        }
+        let kind = if options.kind.contains(':') {
+            options.kind.clone()
+        } else {
+            format!("minecraft:{}", options.kind)
+        };
+        let (id, info) = self.with_entities(|s, me| {
+            if !s.can_spawn {
+                return Err("mobs can't be spawned from this hook".to_string());
+            }
+            if dimension != s.dimension {
+                return Err(format!(
+                    "the server is simulating {}, not {dimension}",
+                    s.dimension
+                ));
+            }
+            if !s.kinds.contains(&kind) {
+                return Err(format!("no mob kind {kind}"));
+            }
+            if s.entities.iter().filter(|e| e.owner == me).count() >= MAX_ENTITIES {
+                return Err(format!("the mod has {MAX_ENTITIES} mobs already"));
+            }
+            let id = s.next_id.max(1);
+            s.next_id = id + 1;
+            let health = options.health.unwrap_or(20.0);
+            let info = EntityInfo {
+                id,
+                owner: me.to_owned(),
+                kind: kind.clone(),
+                tag: options.tag.clone(),
+                dimension: dimension.clone(),
+                pos: [x, y, z],
+                yaw: 0.0,
+                health,
+                max_health: health,
+                dying: false,
+            };
+            s.entities.push(info.clone());
+            Ok((id, info))
+        })??;
+        let _ = info;
+        self.entity_spawns += 1;
+        self.out.push(Output::SpawnEntity {
+            mod_id: self.id.clone(),
+            id,
+            pos: [x, y, z],
+            options: EntitySpawn { kind, ..options },
+        });
+        Ok(id)
+    }
+    fn get(&mut self, id: u32) -> Option<entities::Entity> {
+        self.own_entity(id).ok().map(|e| e.to_wit())
+    }
+    fn list(&mut self) -> Vec<entities::Entity> {
+        self.with_entities(|s, me| {
+            s.entities
+                .iter()
+                .filter(|e| e.owner == me)
+                .map(EntityInfo::to_wit)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+    fn teleport(&mut self, id: u32, x: f64, y: f64, z: f64) -> Result<(), String> {
+        self.own_entity(id)?;
+        if ![x, y, z].iter().all(|v| v.is_finite()) {
+            return Err("a position must be finite".into());
+        }
+        // The mod reads the new place at once.
+        self.with_entities(|s, _| {
+            if let Some(e) = s.entities.iter_mut().find(|e| e.id == id) {
+                e.pos = [x, y, z];
+            }
+        })?;
+        self.out.push(Output::TeleportEntity {
+            mod_id: self.id.clone(),
+            id,
+            pos: [x, y, z],
+        });
+        Ok(())
+    }
+    fn push(&mut self, id: u32, x: f64, y: f64, z: f64) -> Result<(), String> {
+        self.own_entity(id)?;
+        if ![x, y, z].iter().all(|v| v.is_finite()) {
+            return Err("a velocity must be finite".into());
+        }
+        self.out.push(Output::PushEntity {
+            mod_id: self.id.clone(),
+            id,
+            velocity: [x, y, z],
+        });
+        Ok(())
+    }
+    fn set_health(&mut self, id: u32, health: f32) -> Result<(), String> {
+        let e = self.own_entity(id)?;
+        if !health.is_finite() || health < 0.0 {
+            return Err("health must be 0 or more".into());
+        }
+        let health = health.min(e.max_health);
+        self.with_entities(|s, _| {
+            if let Some(e) = s.entities.iter_mut().find(|e| e.id == id) {
+                e.health = health;
+            }
+        })?;
+        self.out.push(Output::SetEntityHealth {
+            mod_id: self.id.clone(),
+            id,
+            health,
+        });
+        Ok(())
+    }
+    fn remove(&mut self, id: u32) {
+        if self.own_entity(id).is_ok() {
+            self.out.push(Output::RemoveEntity {
+                mod_id: self.id.clone(),
+                id,
+            });
+        }
     }
 }
 impl State {

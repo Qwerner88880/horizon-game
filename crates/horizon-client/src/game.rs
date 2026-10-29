@@ -8680,6 +8680,9 @@ impl Game<'_> {
             self.mobs[index].health,
             amount,
         );
+        // A mob of a mod: its mod answers for the blow too (capability
+        // `entities`).
+        let amount = self.mod_entity_hurt(index, amount);
         let sweep = self.sweep_attack_position(scale, crit);
         let (knockback, knockback_attack) = self.extra_knockback(&target_kind, scale);
         self.attack_ticks = 0;

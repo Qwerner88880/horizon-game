@@ -29,6 +29,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `saved-data` | [`saved-data`](#saved-data) | keep data of its own on the world, saved with the world |
 | `item-hooks` | [`item-hooks`](#item-hooks) | act on the items it claims: their use and their blow, each tick held or worn, and data of its own on each stack |
 | `network` | [`network`](#network) | send messages to the other half of the mod, on the server or on your game, and hear its messages |
+| `entities` | [`entities`](#entities) | spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die |
 
 ## World `horizon-mod`
 
@@ -48,8 +49,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `server-events`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -106,6 +107,13 @@ The game's side of capability `item-hooks`: a world of its own, so server mods b
 
 - Imports (what the game offers): `players`, `item-hooks`
 - Exports (what the mod provides): `item-events`
+
+## World `entity-host`
+
+The game's side of capability `entities`: a world of its own, so server mods built before it (no `entity-events` export) still load.
+
+- Imports (what the game offers): `players`, `entities`
+- Exports (what the mod provides): `entity-events`
 
 ## World `net-server-host`
 
@@ -1255,3 +1263,72 @@ What the game calls in a client mod with capability `network`.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `server-sent` | `func(channel: string, data: list<u8>)` | The server half of the mod sent `data` on `channel`. |
+
+## `entities`
+
+Access: capability `entities`.
+
+Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): mobs of the mod's own. Each is a vanilla mob (a zombie, an iron golem) the server runs as it runs any, with its hitbox, damage, knockback, loot and saving, marked as the mod's: the mod chooses its kind, switches its own AI off to steer it itself, hides its model to put display models over it (capability `displays`), and hears when it is struck, used and dies. The mark is kept with the mob in the world's save, so the mod finds its mobs again after a restart.
+
+### record `entity`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The mob's entity id: stable while it lives. |
+| `kind` | `string` | The vanilla mob it is: `minecraft:iron_golem`. |
+| `tag` | `string` | The mod's own name for what it is (`sentinel`), set at spawn. |
+| `dimension` | `string` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `yaw` | `f32` |  |
+| `health` | `f32` |  |
+| `max-health` | `f32` |  |
+| `dying` | `bool` | Its health is gone and the body waits to vanish (`died` told). |
+
+### record `spawn-options`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `string` | A vanilla mob: `minecraft:zombie`, or just `zombie`. |
+| `tag` | `string` | The mod's name for it, `[a-z0-9_./-]{1,64}`. |
+| `no-ai` | `bool` | No goals and no movement of its own: the mod moves it. |
+| `invisible` | `bool` | Its model is hidden: display models stand in. |
+| `silent` | `bool` |  |
+| `invulnerable` | `bool` |  |
+| `no-gravity` | `bool` |  |
+| `takes-use` | `bool` | A right click on it reaches the mod (`used`) and does nothing else. |
+| `name` | `option<string>` | Its name, shown over it, up to 64 characters. |
+| `health` | `option<f32>` | Its health at spawn (its kind's full health by default). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `spawn` | `func(dimension: string, x: f64, y: f64, z: f64, options: spawn-options) -> result<u32, string>` | Spawns a mob of the mod in `dimension` (the one the server is simulating: other dimensions are an error for now), at a position: its entity id, known at once. It exists from the end of the call. An error for an unknown kind, a bad name, a dimension, past 32 spawns a call or 1024 mobs of the mod, and where the game can't take it (event hooks that run mid-tick, a blow's `hurt`). |
+| `get` | `func(id: u32) -> option<entity>` | One of the mod's mobs, as of the start of the call (or its spawn). |
+| `list` | `func() -> list<entity>` | All of the mod's mobs, in the same way. |
+| `teleport` | `func(id: u32, x: f64, y: f64, z: f64) -> result<_, string>` | Puts the mob at a position (a mob with its AI off moves only so). |
+| `push` | `func(id: u32, x: f64, y: f64, z: f64) -> result<_, string>` | Adds a velocity to the mob (knockback, a leap). |
+| `set-health` | `func(id: u32, health: f32) -> result<_, string>` | Sets its health, up to its full health: 0 kills it. |
+| `remove` | `func(id: u32)` | Removes the mob without a death (no loot, no `died`; `removed` follows). |
+
+## `entity-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `entities`. A server mod built before it has no such export and keeps working.
+
+### type `player`
+
+`type player = player`
+
+### type `entity`
+
+`type entity = entity`
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `tick` | `func(tick: u64, entities: list<entity>)` | Each server tick, after the block entities': the mod's mobs in the level, up to 512 (the first by id). |
+| `hurt` | `func(player: player, entity: entity, damage: f32) -> result<f32, string>` | A player's blow with the hand or a weapon is about to hurt one of the mod's mobs for `damage`: answer with the damage to deal instead, 0 to cancel it (never more than four times). Only blows from players reach it; other damage lands as vanilla has it. An error cancels nothing. |
+| `died` | `func(entity: entity)` | A mob of the mod died, whatever killed it: told once, as it starts to fall; its loot drops as vanilla's. |
+| `removed` | `func(entity: entity)` | A mob of the mod is gone: after its death, removed, or despawned. Its last state. |
+| `used` | `func(player: player, entity: entity)` | A player right-clicked a mob of the mod that takes the use. |

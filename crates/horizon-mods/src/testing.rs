@@ -41,7 +41,31 @@ pub struct TestGame {
     /// 40. What `set-data` writes stays there, as it stays on the stack in
     /// the game.
     pub stacks: std::collections::BTreeMap<String, Vec<Option<crate::items::Stack>>>,
+    /// The mobs of the mods (capability `entities`), in the Overworld: what
+    /// the mods spawned, steered and hurt. Every mob has 20 health.
+    pub entities: Vec<crate::EntityInfo>,
+    /// Mobs that take a right click (spawned with `takes-use`).
+    entity_takes_use: std::collections::BTreeSet<u32>,
+    /// The next entity id a spawn takes.
+    entity_next: u32,
+    /// Mobs to tell the mods died, and are gone, on the next tick.
+    entity_died: Vec<crate::EntityInfo>,
+    entity_removed: Vec<crate::EntityInfo>,
+    /// A step has lent the mobs for the calls of its parts.
+    entity_lent: bool,
 }
+
+/// The vanilla mobs a test's mods may spawn.
+const TEST_MOBS: [&str; 8] = [
+    "minecraft:zombie",
+    "minecraft:skeleton",
+    "minecraft:creeper",
+    "minecraft:iron_golem",
+    "minecraft:cow",
+    "minecraft:pig",
+    "minecraft:sheep",
+    "minecraft:villager",
+];
 
 /// The world a script's mod reads: [`TestGame::world`], copied for a step.
 struct ScriptWorld(std::collections::BTreeMap<(i32, i32, i32), String>);
@@ -207,6 +231,12 @@ impl TestGame {
             world: Default::default(),
             block_entities: Default::default(),
             stacks: Default::default(),
+            entities: Vec::new(),
+            entity_takes_use: Default::default(),
+            entity_next: 1000,
+            entity_died: Vec::new(),
+            entity_removed: Vec::new(),
+            entity_lent: false,
         };
         copy_mod(hmod, &copy)?;
         game.start()?;
@@ -265,8 +295,167 @@ impl TestGame {
             self.mods.tick(self.tick);
             self.mods.server_tick(self.tick);
             self.mods.block_entity_tick(self.tick);
+            self.entities_tick();
             self.items_tick();
         }
+    }
+    /// Lends the mobs to the mods for the calls until
+    /// [`TestGame::settle_entities`]; `can_spawn` as the game has it.
+    fn lend_entities(&mut self, can_spawn: bool) {
+        self.mods.lend_entities(crate::EntityState {
+            next_id: self.entity_next,
+            dimension: "minecraft:overworld".into(),
+            can_spawn,
+            kinds: std::sync::Arc::new(TEST_MOBS.iter().map(|k| (*k).to_owned()).collect()),
+            entities: self.entities.clone(),
+        });
+    }
+    /// Takes the mobs back and applies what the mods did to them, as the game
+    /// does after its calls.
+    fn settle_entities(&mut self) {
+        if let Some(state) = self.mods.take_entities() {
+            self.entity_next = self.entity_next.max(state.next_id);
+        }
+        for o in self.mods.take_entity_outputs() {
+            match o {
+                Output::SpawnEntity {
+                    mod_id,
+                    id,
+                    pos,
+                    options,
+                } => {
+                    let kind = if options.kind.contains(':') {
+                        options.kind.clone()
+                    } else {
+                        format!("minecraft:{}", options.kind)
+                    };
+                    if options.takes_use {
+                        self.entity_takes_use.insert(id);
+                    }
+                    self.entities.push(crate::EntityInfo {
+                        id,
+                        owner: mod_id,
+                        kind,
+                        tag: options.tag,
+                        dimension: "minecraft:overworld".into(),
+                        pos,
+                        yaw: 0.0,
+                        health: options.health.map_or(20.0, |h| h.min(20.0)),
+                        max_health: 20.0,
+                        dying: false,
+                    });
+                }
+                Output::TeleportEntity { mod_id, id, pos } => {
+                    if let Some(e) = self.mob_of(&mod_id, id) {
+                        e.pos = pos;
+                    }
+                }
+                Output::PushEntity { .. } => {}
+                Output::SetEntityHealth { mod_id, id, health } => {
+                    if let Some(e) = self.mob_of(&mod_id, id) {
+                        e.health = health.min(e.max_health);
+                    }
+                    self.reap_dying();
+                }
+                Output::RemoveEntity { mod_id, id } => {
+                    if let Some(i) = self
+                        .entities
+                        .iter()
+                        .position(|e| e.id == id && e.owner == mod_id)
+                    {
+                        let gone = self.entities.remove(i);
+                        self.entity_removed.push(gone);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn mob_of(&mut self, mod_id: &str, id: u32) -> Option<&mut crate::EntityInfo> {
+        self.entities
+            .iter_mut()
+            .find(|e| e.id == id && e.owner == mod_id)
+    }
+    /// A mob with no health left starts dying: its mod is told on the next
+    /// tick, and it is gone the tick after.
+    fn reap_dying(&mut self) {
+        for e in &mut self.entities {
+            if e.health <= 0.0 && !e.dying {
+                e.health = 0.0;
+                e.dying = true;
+                self.entity_died.push(e.clone());
+            }
+        }
+    }
+    /// The server tick's part for mobs: the deaths and removals since the
+    /// last tick, then the tick, then what the mods did.
+    fn entities_tick(&mut self) {
+        if !self.mods.wants_entities() {
+            return;
+        }
+        let was_lent = self.entity_lent;
+        self.lend_entities(true);
+        let told = std::mem::take(&mut self.entity_died);
+        for e in &told {
+            self.mods.entity_died(e);
+        }
+        // A mob that died vanishes the tick after its death was told.
+        let (dead, alive): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entities)
+            .into_iter()
+            .partition(|e| e.dying && !told.iter().any(|t| t.id == e.id));
+        self.entities = alive;
+        self.entity_removed.extend(dead);
+        for e in std::mem::take(&mut self.entity_removed) {
+            self.mods.entity_removed(&e);
+        }
+        let live = self.entities.clone();
+        self.mods.entity_tick(self.tick, &live);
+        self.settle_entities();
+        if was_lent {
+            self.lend_entities(true);
+        }
+    }
+    /// `player` strikes the mob of the mods tagged `tag` for `damage`: its
+    /// mod answers (capability `entities`), and what is left comes off its
+    /// health. The damage dealt.
+    pub fn strike_entity(
+        &mut self,
+        player: &ServerPlayer,
+        tag: &str,
+        damage: f32,
+    ) -> Result<f32, String> {
+        self.snapshot();
+        let info = self.find_entity(tag)?;
+        self.lend_entities(false);
+        let dealt = self.mods.entity_hurt(player, &info, damage);
+        self.settle_entities();
+        if let Some(e) = self.entities.iter_mut().find(|e| e.id == info.id) {
+            e.health = (e.health - dealt).max(0.0);
+        }
+        self.reap_dying();
+        Ok(dealt)
+    }
+    /// `player` right-clicks the mob tagged `tag`: its mod hears it when the
+    /// mob takes the use.
+    pub fn interact_entity(&mut self, player: &ServerPlayer, tag: &str) -> Result<(), String> {
+        self.snapshot();
+        let info = self.find_entity(tag)?;
+        if !self.entity_takes_use.contains(&info.id) {
+            return Err(format!(
+                "the mob tagged {tag} does not take the use (spawn it with takes_use)"
+            ));
+        }
+        self.lend_entities(true);
+        self.mods.entity_used(player, &info);
+        self.settle_entities();
+        Ok(())
+    }
+    fn find_entity(&self, tag: &str) -> Result<crate::EntityInfo, String> {
+        self.entities
+            .iter()
+            .find(|e| e.tag == tag && !e.dying)
+            .cloned()
+            .ok_or_else(|| format!("no living mob of the mods is tagged {tag}"))
     }
     /// Each tick's `inventory-tick` (capability `item-hooks`): every
     /// claimed stack of every player on, to the mod that claims it, at most
@@ -810,6 +999,22 @@ pub struct AttackSet {
 /// A player hurt while wearing a claimed item (capability `item-hooks`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct StrikeSet {
+    /// The mob struck, by the tag its mod gave it.
+    tag: String,
+    damage: f32,
+}
+
+/// A player right-clicks a mob of a mod (capability `entities`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractSet {
+    tag: String,
+}
+
+/// A player hurt while wearing a claimed item (capability `item-hooks`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HurtSet {
     amount: f32,
     #[serde(default)]
@@ -870,6 +1075,10 @@ pub struct Step {
     use_item: Option<UseItemSet>,
     attack: Option<AttackSet>,
     hurt: Option<HurtSet>,
+    /// Server mods: the player strikes or right-clicks a mob of a mod
+    /// (capability `entities`), after `hurt`.
+    strike: Option<StrikeSet>,
+    interact: Option<InteractSet>,
     /// A message of the other half of the mod (capability `network`): the
     /// player's client half for a server mod, the server half for a client
     /// mod. Before `command`.
@@ -904,6 +1113,11 @@ pub struct Expect {
     /// The mod's screen after the step, as [`TestGame::screen_lines`]
     /// shows it; `[]` for no screen open.
     screen: Option<Vec<String>>,
+    /// The mods' mobs after the step (capability `entities`), as
+    /// `tag kind x y z hp=health`, ordered by id; a dying one ends `dying`.
+    entities: Option<Vec<String>>,
+    /// The damage the mob's mod let through the step's `strike`.
+    dealt: Option<f32>,
     /// Server mods: every `players.tell` as `"Name: text"`, and every
     /// `players.broadcast`, in order.
     told: Option<Vec<String>>,
@@ -1053,6 +1267,8 @@ impl Step {
             stacks: game.stacks.clone(),
             written: Vec::new(),
         }));
+        game.lend_entities(true);
+        game.entity_lent = true;
         if let Some(name) = &self.join {
             game.join(name);
         }
@@ -1078,7 +1294,9 @@ impl Step {
             || self.hold.is_some()
             || self.use_item.is_some()
             || self.attack.is_some()
-            || self.hurt.is_some();
+            || self.hurt.is_some()
+            || self.strike.is_some()
+            || self.interact.is_some();
         let actor = if server && acts {
             Some(actor(game)?)
         } else {
@@ -1147,6 +1365,13 @@ impl Step {
                 .unwrap_or_else(|| "minecraft:generic".into());
             game.hurt_player(p, &source, hurt.amount);
         }
+        let mut dealt = None;
+        if let (Some(s), Some(p)) = (&self.strike, &who) {
+            dealt = Some(game.strike_entity(p, &s.tag, s.damage)?);
+        }
+        if let (Some(s), Some(p)) = (&self.interact, &who) {
+            game.interact_entity(p, &s.tag)?;
+        }
         if let (Some(c), Some(p)) = (&self.click, &who) {
             game.menu_click(p, &c.menu, c.slot, c.button, c.shift);
         }
@@ -1181,6 +1406,8 @@ impl Step {
         {
             return Err(format!("{name} is not on the server"));
         }
+        game.entity_lent = false;
+        game.settle_entities();
         game.mods.take_world();
         if let Some(store) = game.mods.take_block_entities() {
             game.block_entities = store;
@@ -1300,6 +1527,29 @@ impl Step {
                 })
                 .collect();
             same("net", want, &got)?;
+        }
+        if let Some(want) = &e.entities {
+            let mut mobs: Vec<&crate::EntityInfo> = game.entities.iter().collect();
+            mobs.sort_by_key(|m| m.id);
+            let got: Vec<String> = mobs
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{} {} {:.1} {:.1} {:.1} hp={}{}",
+                        m.tag,
+                        m.kind,
+                        m.pos[0],
+                        m.pos[1],
+                        m.pos[2],
+                        m.health,
+                        if m.dying { " dying" } else { "" }
+                    )
+                })
+                .collect();
+            same("entities", want, &got)?;
+        }
+        if let Some(want) = e.dealt {
+            same("dealt", &Some(want), &dealt)?;
         }
         if let Some(want) = &e.told {
             let name = |id: &str| {

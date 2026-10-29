@@ -37,6 +37,30 @@ pub(super) struct ModMenu {
     pub(super) sent: Vec<Option<horizon_client::items::ItemStack>>,
 }
 
+/// Capability `entities`' bookkeeping: which mobs of the game are a mod's
+/// (found by the marks in their saved data), and what the mods were last
+/// told of them.
+#[cfg(feature = "mods")]
+#[derive(Default)]
+pub(super) struct ModEntityBook {
+    pub(super) owned: std::collections::HashMap<u32, OwnedEntity>,
+    /// Mobs looked at that are no mod's.
+    pub(super) plain: std::collections::HashSet<u32>,
+    /// The world folder the book is of.
+    pub(super) world: Option<std::path::PathBuf>,
+    /// Told on the next tick: mobs that started dying, and mobs gone.
+    pub(super) died: Vec<horizon_mods::EntityInfo>,
+    pub(super) removed: Vec<horizon_mods::EntityInfo>,
+}
+#[cfg(feature = "mods")]
+pub(super) struct OwnedEntity {
+    pub(super) takes_use: bool,
+    /// Its state as the last scan found it.
+    pub(super) last: horizon_mods::EntityInfo,
+    /// `died` has been told.
+    pub(super) died: bool,
+}
+
 /// A server mod's display entity (capability `displays`): sent as packets
 /// to the players in its dimension, never in the world itself.
 #[cfg_attr(not(feature = "mods"), allow(dead_code))]
@@ -67,6 +91,8 @@ pub(super) enum ModEvent {
     BlockUse(Who, String, [i32; 3], String),
     /// A message of a mod's client half: the mod, the channel and the bytes.
     NetFromClient(Who, String, String, Vec<u8>),
+    /// A player right-clicked a mod's mob (capability `entities`).
+    EntityUse(Who, u32),
     /// A player used (right-clicked) an item a mod takes the behaviour of
     /// (capability `item-hooks`): the mod, the stack as the mod's
     /// inventories keep it, and the block under the crosshair if there was
@@ -114,6 +140,12 @@ impl Game<'_> {
         false
     }
     pub(super) fn guest_mod_net(&mut self, _conn: u32, _data: &[u8]) {}
+    pub(in crate::game) fn mod_entity_hurt(&mut self, _index: usize, damage: f32) -> f32 {
+        damage
+    }
+    pub(in crate::game) fn mod_entity_use(&mut self, _index: usize) -> bool {
+        false
+    }
     pub(in crate::game) fn mod_item_use(&mut self, _block_hit: Option<&super::Hit>) -> bool {
         false
     }
@@ -564,7 +596,27 @@ mod run {
                 Some(guest) => uuid_string(guest),
                 None => self.player_uuid_string(),
             };
-            players.into_iter().find(|p| p.id == id)
+            let found = players.into_iter().find(|p| p.id == id);
+            // While a guest's packet is handled the hub is out of `self.lan`
+            // and the game stands in for the guest: their state is its own.
+            match (found, self.lan_acting_uuid, &self.player) {
+                (None, Some(guest), Some(p)) => Some(ServerPlayer {
+                    id: uuid_string(guest),
+                    name: self.lan_acting_name.clone().unwrap_or_default(),
+                    x: p.position.x,
+                    y: p.position.y,
+                    z: p.position.z,
+                    dimension: self.dim.id().to_owned(),
+                    game_mode: match self.mode {
+                        Mode::Survival => GameMode::Survival,
+                        Mode::Creative => GameMode::Creative,
+                        Mode::Adventure => GameMode::Adventure,
+                        Mode::Spectator => GameMode::Spectator,
+                    },
+                    health: p.health.health(),
+                }),
+                (found, _, _) => found,
+            }
         }
 
         /// Lends the players' stacks to capability `item-hooks` for the
@@ -656,7 +708,11 @@ mod run {
             let store = std::mem::take(&mut self.mods.block_entities);
             self.mods.mods.lend_block_entities(store);
             self.lend_player_items(host.as_deref());
+            // A blow's mods may read and steer mobs, not spawn (the game
+            // applies a spawn after the call, and this one is mid-tick).
+            self.lend_mod_entities(false);
             let r = f(self);
+            self.return_mod_entities();
             if let Some(store) = self.mods.mods.take_block_entities() {
                 self.mods.block_entities = store;
             }
@@ -912,6 +968,14 @@ mod run {
                             self.mods.mods.menu_closed(&mod_id, &p, &menu);
                         }
                     }
+                    ModEvent::EntityUse(w, id) => {
+                        if let Some(p) = who(&w)
+                            && let Some(o) = self.mods.mod_entities.owned.get(&id)
+                        {
+                            let info = o.last.clone();
+                            self.mods.mods.entity_used(&p, &info);
+                        }
+                    }
                     ModEvent::NetFromClient(w, mod_id, channel, data) => {
                         if let Some(p) = who(&w) {
                             self.mods.mods.net_client_sent(&mod_id, &p, &channel, &data);
@@ -972,6 +1036,16 @@ mod run {
             self.mods.net_counts.clear();
             self.mods.mods.server_tick(self.ticks);
             self.mods.mods.block_entity_tick(self.ticks);
+            // The mods' mobs: those that started dying or are gone, then the
+            // tick, all as the scan at the start of the tick found them.
+            for e in std::mem::take(&mut self.mods.mod_entities.died) {
+                self.mods.mods.entity_died(&e);
+            }
+            for e in std::mem::take(&mut self.mods.mod_entities.removed) {
+                self.mods.mods.entity_removed(&e);
+            }
+            let live = std::mem::take(&mut self.mods.entity_live);
+            self.mods.mods.entity_tick(self.ticks, &live);
             self.mod_items_tick(&players);
             self.sync_mod_displays(None);
             self.return_world();
@@ -1054,6 +1128,7 @@ mod run {
         /// (a connection's command): the stacks of every player on it are
         /// lent, not only those the game can reach.
         fn lend_world_with(&mut self, host: Option<&mut LanHost>) {
+            self.lend_mod_entities(true);
             self.read_mod_block_entities();
             let store = std::mem::take(&mut self.mods.block_entities);
             self.mods.mods.lend_block_entities(store);
@@ -1119,6 +1194,7 @@ mod run {
         /// [`Game::return_world`], with the hub when it is out of
         /// `self.lan` (a connection's command), for the players' stacks.
         fn return_world_with(&mut self, host: Option<&mut LanHost>) {
+            self.return_mod_entities();
             if let Some(store) = self.mods.mods.take_block_entities() {
                 self.mods.block_entities = store;
             }
@@ -1548,6 +1624,341 @@ mod run {
             self.mods.events.push(event);
         }
 
+        /// The marks a mod puts on its mobs, in their saved data (`Tags`):
+        /// `horizon_mod:<id>`, `horizon_tag:<name>`, and `horizon_use` for a
+        /// mob that takes right clicks.
+        fn entity_marks(owner: &str, tag: &str, takes_use: bool) -> Vec<String> {
+            let mut marks = vec![format!("horizon_mod:{owner}"), format!("horizon_tag:{tag}")];
+            if takes_use {
+                marks.push("horizon_use".into());
+            }
+            marks
+        }
+
+        /// A mob's mod, tag and use from its saved `Tags`; None for a mob of
+        /// no mod.
+        fn entity_owner(raw: Option<&horizon_world::nbt::Tag>) -> Option<(String, String, bool)> {
+            use horizon_world::nbt::Tag;
+            let Some(Tag::List(tags)) = raw.and_then(|r| r.get("Tags")) else {
+                return None;
+            };
+            let (mut owner, mut tag, mut takes_use) = (None, String::new(), false);
+            for t in tags {
+                let Tag::String(s) = t else { continue };
+                let s = s.to_string_lossy();
+                if let Some(id) = s.strip_prefix("horizon_mod:") {
+                    owner = Some(id.to_owned());
+                } else if let Some(t) = s.strip_prefix("horizon_tag:") {
+                    tag = t.to_owned();
+                } else if s == "horizon_use" {
+                    takes_use = true;
+                }
+            }
+            owner.map(|o| (o, tag, takes_use))
+        }
+
+        /// Looks at the level's mobs for the mods' own (capability
+        /// `entities`): each mob's mark is read once, then it is followed.
+        /// The mobs that started dying and those gone since the last scan are
+        /// kept for the tick to tell; the live ones come back, as they stand.
+        fn scan_mod_entities(&mut self) -> Vec<horizon_mods::EntityInfo> {
+            use horizon_mods::EntityInfo;
+            if !self.mods.mods.wants_entities() {
+                return Vec::new();
+            }
+            let book = &mut self.mods.mod_entities;
+            if book.world.as_ref() != Some(&self.world_root) {
+                *book = Default::default();
+                book.world = Some(self.world_root.clone());
+            }
+            let dimension = self.dim.id().to_owned();
+            let mut present = std::collections::HashSet::new();
+            let mut live = Vec::new();
+            for m in &self.mobs {
+                if m.removed {
+                    continue;
+                }
+                present.insert(m.id);
+                if book.plain.contains(&m.id) {
+                    continue;
+                }
+                let kind = format!("minecraft:{}", m.kind.id.trim_start_matches("minecraft:"));
+                let info = |owner: &str, tag: &str| EntityInfo {
+                    id: m.id,
+                    owner: owner.to_owned(),
+                    kind: kind.clone(),
+                    tag: tag.to_owned(),
+                    dimension: dimension.clone(),
+                    pos: [m.position.x, m.position.y, m.position.z],
+                    yaw: m.yaw,
+                    health: m.health,
+                    max_health: m.attrs.max_health,
+                    dying: !m.alive(),
+                };
+                if let std::collections::hash_map::Entry::Vacant(slot) = book.owned.entry(m.id) {
+                    match Self::entity_owner(self.persist.raw.get(&m.id)) {
+                        Some((owner, tag, takes_use)) if self.mods.mods.hears_entities(&owner) => {
+                            slot.insert(super::OwnedEntity {
+                                takes_use,
+                                last: info(&owner, &tag),
+                                died: false,
+                            });
+                        }
+                        _ => {
+                            book.plain.insert(m.id);
+                            continue;
+                        }
+                    }
+                }
+                let Some(o) = book.owned.get_mut(&m.id) else {
+                    continue;
+                };
+                let now = info(&o.last.owner, &o.last.tag);
+                if now.dying && !o.died {
+                    o.died = true;
+                    book.died.push(now.clone());
+                }
+                o.last = now.clone();
+                live.push(now);
+            }
+            book.plain.retain(|id| present.contains(id));
+            let gone: Vec<u32> = book
+                .owned
+                .keys()
+                .filter(|id| !present.contains(id))
+                .copied()
+                .collect();
+            for id in gone {
+                if let Some(o) = book.owned.remove(&id) {
+                    book.removed.push(o.last);
+                }
+            }
+            live
+        }
+
+        /// Lends the mods' mobs for the calls until
+        /// [`Game::return_mod_entities`], when a running mod has capability
+        /// `entities`. `can_spawn`: the game applies spawns right after the
+        /// calls (it does not mid-tick).
+        fn lend_mod_entities(&mut self, can_spawn: bool) {
+            if !self.mods.mods.wants_entities() {
+                return;
+            }
+            let live = self.scan_mod_entities();
+            let kinds = self
+                .mods
+                .entity_kinds
+                .get_or_insert_with(|| {
+                    std::sync::Arc::new(self.res.mob_types().keys().cloned().collect())
+                })
+                .clone();
+            self.mods.mods.lend_entities(horizon_mods::EntityState {
+                next_id: self.next_entity + 1,
+                dimension: self.dim.id().to_owned(),
+                can_spawn,
+                kinds,
+                entities: live.clone(),
+            });
+            self.mods.entity_live = live;
+        }
+
+        /// Takes the lent mobs back: the ids the mods were promised are the
+        /// game's now.
+        fn return_mod_entities(&mut self) {
+            if let Some(state) = self.mods.mods.take_entities() {
+                self.next_entity = self.next_entity.max(state.next_id.saturating_sub(1));
+            }
+        }
+
+        /// Marks a mob with its mod's tags in its saved data.
+        fn tag_mod_entity(&mut self, id: u32, marks: &[String]) {
+            use horizon_world::nbt::{JavaString, Tag};
+            let list = Tag::List(
+                marks
+                    .iter()
+                    .map(|m| Tag::String(m.as_str().into()))
+                    .collect(),
+            );
+            let raw = self
+                .persist
+                .raw
+                .entry(id)
+                .or_insert_with(|| Tag::Compound(Default::default()));
+            if let Tag::Compound(c) = raw {
+                let mut all = match c.get(&JavaString::from("Tags")) {
+                    Some(Tag::List(old)) => old.clone(),
+                    _ => Vec::new(),
+                };
+                if let Tag::List(new) = list {
+                    all.extend(new);
+                }
+                c.insert(JavaString::from("Tags"), Tag::List(all));
+            }
+        }
+
+        /// A mod's mob `id` (its owner `mod_id`), to change.
+        fn mod_mob(&mut self, mod_id: &str, id: u32) -> Option<&mut horizon_client::mobs::Mob> {
+            let mine = self
+                .mods
+                .mod_entities
+                .owned
+                .get(&id)
+                .is_some_and(|o| o.last.owner == mod_id);
+            if !mine {
+                return None;
+            }
+            self.mobs.iter_mut().find(|m| m.id == id)
+        }
+
+        /// Applies one of the mods' mob outputs (capability `entities`).
+        fn apply_entity_output(&mut self, output: Output) {
+            use horizon_core::geometry::Vec3;
+            match output {
+                Output::SpawnEntity {
+                    mod_id,
+                    id,
+                    pos,
+                    options,
+                } => {
+                    if self.mobs.iter().any(|m| m.id == id) {
+                        log::warn!(
+                            "Horizon: mod {mod_id}'s mob {id} clashes with a mob of the game"
+                        );
+                        return;
+                    }
+                    self.next_entity = id - 1;
+                    let spawned = self.spawn_mob(&options.kind, pos, true);
+                    self.next_entity = self.next_entity.max(id);
+                    if spawned != Some(id) {
+                        log::warn!("Horizon: mod {mod_id} could not spawn {}", options.kind);
+                        return;
+                    }
+                    let marks = Self::entity_marks(&mod_id, &options.tag, options.takes_use);
+                    self.tag_mod_entity(id, &marks);
+                    let dimension = self.dim.id().to_owned();
+                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                        m.no_ai = options.no_ai;
+                        m.invisible = options.invisible;
+                        m.silent = options.silent;
+                        m.invulnerable_flag = options.invulnerable;
+                        m.no_gravity = options.no_gravity;
+                        if let Some(name) = &options.name {
+                            m.custom_name = Some(name.clone());
+                            m.name_visible = true;
+                        }
+                        if let Some(h) = options.health {
+                            m.health = h.min(m.attrs.max_health);
+                        }
+                        let kind =
+                            format!("minecraft:{}", m.kind.id.trim_start_matches("minecraft:"));
+                        self.mods.mod_entities.owned.insert(
+                            id,
+                            super::OwnedEntity {
+                                takes_use: options.takes_use,
+                                last: horizon_mods::EntityInfo {
+                                    id,
+                                    owner: mod_id,
+                                    kind,
+                                    tag: options.tag,
+                                    dimension,
+                                    pos,
+                                    yaw: m.yaw,
+                                    health: m.health,
+                                    max_health: m.attrs.max_health,
+                                    dying: false,
+                                },
+                                died: false,
+                            },
+                        );
+                    }
+                }
+                Output::TeleportEntity { mod_id, id, pos } => {
+                    if let Some(m) = self.mod_mob(&mod_id, id) {
+                        m.position = Vec3::new(pos[0], pos[1], pos[2]);
+                        m.fall_distance = 0.0;
+                        m.needs_sync = true;
+                    }
+                }
+                Output::PushEntity {
+                    mod_id,
+                    id,
+                    velocity,
+                } => {
+                    if let Some(m) = self.mod_mob(&mod_id, id) {
+                        m.velocity = Vec3::new(
+                            m.velocity.x + velocity[0],
+                            m.velocity.y + velocity[1],
+                            m.velocity.z + velocity[2],
+                        );
+                        m.needs_sync = true;
+                    }
+                }
+                Output::SetEntityHealth { mod_id, id, health } => {
+                    if let Some(m) = self.mod_mob(&mod_id, id) {
+                        m.health = health.min(m.attrs.max_health);
+                        m.needs_sync = true;
+                    }
+                }
+                Output::RemoveEntity { mod_id, id } => {
+                    if let Some(m) = self.mod_mob(&mod_id, id) {
+                        m.removed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        /// A player's blow is about to hurt mob `index`: when it is a mod's,
+        /// the mod answers with the damage to deal (capability `entities`).
+        pub(in crate::game) fn mod_entity_hurt(&mut self, index: usize, damage: f32) -> f32 {
+            if !self.hears_players() {
+                return damage;
+            }
+            let Some(info) = self
+                .mods
+                .mod_entities
+                .owned
+                .get(&self.mobs[index].id)
+                .map(|o| o.last.clone())
+            else {
+                return damage;
+            };
+            let Some(player) = self.acting_server_player(None) else {
+                return damage;
+            };
+            let mut host = self.lan.take();
+            let answer = self.with_mod_stores(host.as_mut(), |g| {
+                g.mods.mods.entity_hurt(&player, &info, damage)
+            });
+            self.lan = host;
+            answer
+        }
+
+        /// The acting player right-clicked mob `index`: true when it is a
+        /// mod's that takes the use, and the game does nothing else with
+        /// the click (the mod hears it at the tick's end). A sneaking
+        /// player keeps vanilla's use.
+        pub(in crate::game) fn mod_entity_use(&mut self, index: usize) -> bool {
+            if !self.hears_players() || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
+                return false;
+            }
+            let id = self.mobs[index].id;
+            // A click names each hand in turn: the main hand's is the one.
+            if self.hand != horizon_client::first_person::Hand::Main
+                || !self
+                    .mods
+                    .mod_entities
+                    .owned
+                    .get(&id)
+                    .is_some_and(|o| o.takes_use)
+            {
+                return false;
+            }
+            let who = self.lan_acting.map_or(Who::Local, Who::Conn);
+            self.mods.events.push(ModEvent::EntityUse(who, id));
+            true
+        }
+
         /// The acting player uses the block at `pos` with the main hand: true
         /// when a server mod takes the use of it (the mod hears it at the
         /// tick's end, and the game does nothing else with the click).
@@ -1684,6 +2095,11 @@ mod run {
                 line
             };
             match output {
+                Output::SpawnEntity { .. }
+                | Output::TeleportEntity { .. }
+                | Output::PushEntity { .. }
+                | Output::SetEntityHealth { .. }
+                | Output::RemoveEntity { .. } => self.apply_entity_output(output),
                 Output::Tell { name, player, text } => {
                     self.tell_server_player(host, &player, named(&name, text));
                 }
