@@ -605,15 +605,16 @@ mod tests {
     fn defaults_match_vanilla_init_settings() {
         let p = ServerProperties::new(Properties::default(), &mut Fixed).unwrap();
         let stored = p.stored(0);
-        assert!(stored.starts_with(
-            "#Minecraft server properties\n#Thu Jan 01 00:00:00 UTC 1970\naccepts-transfers=false\n"
-        ));
-        assert!(stored.contains("\nlevel-type=minecraft\\:normal\n"));
-        assert!(
-            stored
-                .contains("\nmanagement-server-secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n")
-        );
-        assert!(stored.ends_with("\nview-distance=10\nwhite-list=true\n"));
+        // Java's store writes the platform's own line separator.
+        let nl = crate::java_properties::line_separator();
+        assert!(stored.starts_with(&format!(
+            "#Minecraft server properties{nl}#Thu Jan 01 00:00:00 UTC 1970{nl}accepts-transfers=false{nl}"
+        )));
+        assert!(stored.contains(&format!("{nl}level-type=minecraft\\:normal{nl}")));
+        assert!(stored.contains(&format!(
+            "{nl}management-server-secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA{nl}"
+        )));
+        assert!(stored.ends_with(&format!("{nl}view-distance=10{nl}white-list=true{nl}")));
         assert_eq!(stored.lines().count(), 71);
         assert!(p.random_seed);
         assert_eq!(p.seed, 7);

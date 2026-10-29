@@ -430,9 +430,13 @@ mod tests {
         p.put("motd", " A=B#".into());
         p.put("b key", "é".into());
         let s = p.store(Some("Minecraft server properties"), "DATE", false);
+        // Java's store writes the platform's own line separator.
+        let nl = line_separator();
         assert_eq!(
             s,
-            "#Minecraft server properties\n#DATE\nb\\ key=é\nlevel-type=minecraft\\:normal\nmotd=\\ A\\=B\\#\n"
+            format!(
+                "#Minecraft server properties{nl}#DATE{nl}b\\ key=é{nl}level-type=minecraft\\:normal{nl}motd=\\ A\\=B\\#{nl}"
+            )
         );
         assert!(p.store(None, "D", true).contains("b\\ key=\\u00E9"));
     }
