@@ -279,7 +279,15 @@ command = "coords"
 expect.feedback = "Coordinates panel hidden"
 ```
 
-A step's parts happen in this order:
+A step's parts happen in this order: `reload`, `title-screen`, `blocks`,
+`join`, `player`, `clock`, `hold`, `ticks`, `frames`, `chat`, then — for
+a server mod — `use`, `use-item`, `attack` and `hurt` (`use-item = { item =
+"minecraft:blaze_rod", on = { x = 0, y = 63, z = 0, state =
+"minecraft:lodestone" } }` uses the main hand's stack in the air or on a
+block, `attack = { item = ..., kind = "minecraft:zombie", health = 20.0,
+damage = 4.0 }` strikes an entity with it, `hurt = { amount = 10.0,
+source = "minecraft:fireworks" }` hurts the player), then `click`,
+`command`, `break`, `place` and `leave`.
 
 | Key | Does |
 | --- | --- |
@@ -287,6 +295,7 @@ A step's parts happen in this order:
 | `title-screen = true` | no player and no clock until a step sets them |
 | `blocks = [{ x = 0, y = 63, z = 0, state = "minecraft:stone" }]` | server mods with `world`: those blocks of the Overworld, before the rest of the step (every other block is air, every biome the dimension's plainest: plains, nether wastes, the end) |
 | `player = { x = 3.0, ... }`, `clock = { day-time = 0 }` | changes those fields (`x y z yaw pitch health food dimension`, `game-time day-time`) |
+| `hold = { item = "minecraft:blaze_rod", count = 1, slot = 0 }` | server mods with `item-hooks`: the player holds that stack, fresh with no data of a mod's on it (count and slot optional; slot 0 is the main hand, armour feet to head 36..39, the off hand 40) |
 | `ticks = n`, `frames = n` | that many ticks (the game's tick counter and the clock move on), then frames 1/60 s apart |
 | `chat = "<Steve> hi"` | a chat line the player receives |
 | `command = "where north"` | the player types `/where north`; a command the mod doesn't own fails the step |
@@ -826,6 +835,71 @@ experimental = ["saved-data"]
 **Not yet.** No telling of another mod's changes, no versioning or
 migrations of the bytes, no sharing between mods; values are raw bytes,
 not for large data.
+
+#### Items with behaviour (capability `item-hooks`, experimental)
+
+A server mod takes the behaviour of the items it claims, by id — a
+vanilla item (`minecraft:blaze_rod`) or a content mod's (`mymod:wrench`),
+as blocks are claimed for block entities. It hears their use and their
+blow, each tick they are held or worn, and it keeps bytes of its own on
+each stack (energy in a tool, its mode): a component on the stack, so the
+bytes travel with it between slots, players and the world's saves — no
+file of their own. The `cells` example claims a blaze rod as an energy
+staff and a golden helmet as a shield (`/staff`).
+
+```toml
+capabilities = ["item-hooks"]
+experimental = ["item-hooks"]
+```
+
+- **Claims.** `ServerMod::item_hooks_items` names the items, once after
+  `init` (up to 256, ids with a namespace). Two mods may claim the same
+  item: each hears its hooks on it and keeps its own bytes on the stack.
+- **Use.** The player used (right-clicked) a claimed item in the main
+  hand: `item_used` with nothing to use it on, `item_used_on_block` with
+  the crosshair on a block, after the block's own vanilla use passed (a
+  door opened still swallows the click). The mod hears it at the tick's
+  end, as a block's use; the game does nothing else with the click — but
+  a sneaking player keeps vanilla's use, the off hand is always
+  vanilla's, and a block a mod takes the use of (capability
+  `block-entities`) wins over the item.
+- **Blow.** The player struck an entity — a mob, or a player in PvP —
+  with a claimed item in the main hand: `hurt_entity` answers before the
+  damage lands, with what the blow should deal instead (0 to cancel it;
+  the same damage to change nothing), kept to nothing and four times
+  vanilla's. Only the number changes: knockback, sweep and the rest are
+  vanilla's. An error, or a mod that traps, cancels nothing.
+- **Tick.** `inventory_tick` gets every claimed stack of every online
+  player each server tick, after the block entities' tick — held or
+  worn, armour's slot named (36 feet, 37 legs, 38 chest, 39 head). At
+  most 512 a call: a longer list comes in turns, the game walking it
+  round-robin by the tick, so every stack is told within a few ticks.
+- **Armour.** A player wearing a claimed item was hurt for a typed
+  damage (`minecraft:fireworks`, `minecraft:magic`): `player_hurt`
+  answers with how much of it the mod's armour takes — what it takes is
+  gone, the rest hurts as vanilla has it. The hook hears the hurts the
+  game funnels by their type: falling, firework rockets, magic and
+  poison effects, an ender pearl, the dragon, lightning, thorns.
+- **Data.** `item_hooks::stack(player, slot)` reads a claimed stack —
+  its item, count and the mod's own bytes on it — and
+  `set_data(player, slot, data)` replaces them (none empties them):
+  41 slots a player, the 36 inventory slots (hotbar first), armour feet
+  to head 36..39, the off hand 40. Both ask for a claimed item, at most
+  4 KiB and 32 writes a call, and a stack of one: a split copies a
+  stack's components to both halves, so charge on a splittable stack
+  would double — a stack that carries data keeps count 1, and what the
+  bytes hold is the mod's business (the example keeps a `u64`
+  little-endian). Read and written only during the server's hooks, as
+  the block entities are; a vanilla client doesn't see the component,
+  and the player's own client is told each change.
+
+**Not yet.** The left hand; breaking blocks with a tool of the mod's
+(durability, efficiency — game-loop events); status effects while worn
+(an armour mod has the tick and its take instead); the item's name or
+lore from its data (a charge shown in the name); damage the game funnels
+through its full hurt pipeline (mob melee, arrows, PvP) reaching
+`player_hurt`; AoE blows; a cooldown of the mod's; data on stacks that
+split (see above).
 
 ## Publish your mod
 
