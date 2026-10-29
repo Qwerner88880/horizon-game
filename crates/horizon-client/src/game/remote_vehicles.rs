@@ -101,8 +101,9 @@ impl Game<'_> {
     }
 
     /// `ClientPacketListener.handleSetEntityPassengersPacket`: who rides
-    /// `vehicle` now. The local player gets in or out; mobs and other
-    /// players sit where the server keeps them.
+    /// `vehicle` now. The local player gets in or out; mobs, other players
+    /// and the server mods' display entities sit where the server keeps
+    /// them.
     pub(super) fn remote_set_passengers(&mut self, vehicle: i32, passengers: &[i32]) {
         let Some(me) = self.remote.as_ref().map(|r| r.entity_id) else {
             return;
@@ -115,6 +116,15 @@ impl Game<'_> {
             } else if passengers.contains(&(m.id as i32)) {
                 m.extra.mount = Some(vehicle_id);
                 m.extra.passenger = true;
+            }
+        }
+        // A display entity rides where its carrier stands (the mod lifted it
+        // by its own transform); off the list, it stands on its own.
+        for (id, display) in &mut self.text_displays {
+            if passengers.contains(id) {
+                display.riding = Some(vehicle_id);
+            } else if display.riding == Some(vehicle_id) {
+                display.riding = None;
             }
         }
         if passengers.contains(&me) {

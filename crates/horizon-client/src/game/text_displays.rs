@@ -37,6 +37,12 @@ pub(super) struct RemoteTextDisplay {
     /// A block display's block (`BlockDisplay.DATA_BLOCK_STATE_ID`); None
     /// for a text display.
     pub block: Option<BlockStateId>,
+    /// An item display's stack (`ItemDisplay.DATA_ITEM_STACK_ID`); None for
+    /// the other kinds, and for an item display until its data says.
+    pub item: Option<horizon_client::items::ItemStack>,
+    /// The mob that carries it (`SetPassengers`, capability `displays`):
+    /// while it rides, the carrier's position is the display's.
+    pub riding: Option<u32>,
 }
 
 /// `TextDisplay.CachedInfo`: each line and its width, and the widest.
@@ -74,6 +80,8 @@ impl RemoteTextDisplay {
             last_progress: 0.0,
             lines: None,
             block: None,
+            item: None,
+            riding: None,
         }
     }
     /// A block display, showing air until its data says otherwise.
@@ -82,6 +90,10 @@ impl RemoteTextDisplay {
             block: Some(BlockStateId(0)),
             ..Self::new(position, yaw)
         }
+    }
+    /// An item display, drawing nothing until its data brings a stack.
+    pub fn new_item(position: [f64; 3], yaw: f32) -> Self {
+        Self::new(position, yaw)
     }
     fn progress(&self, partial: f32) -> f32 {
         if self.duration <= 0 {
@@ -146,6 +158,17 @@ impl RemoteTextDisplay {
             self.old_rotation = self.rotation;
         }
     }
+    /// Where a frame draws the display: walked from where it was to where
+    /// it heads, or where its carrier stands while it rides one — a move
+    /// of its own waits (the carrier carries it).
+    fn place(&self, partial: f64, carrier: Option<glam::DVec3>) -> glam::DVec3 {
+        carrier.unwrap_or_else(|| self.previous.lerp(self.position, partial))
+    }
+    /// Whether a frame draws the display at all: a text display with no
+    /// text, or an item display whose stack has not come yet.
+    fn empty(&self, text_empty: bool) -> bool {
+        self.block.is_none() && self.item.is_none() && text_empty
+    }
 }
 fn angle(d: f32) -> f32 {
     (d + 180.0).rem_euclid(360.0) - 180.0
@@ -183,14 +206,23 @@ impl Game<'_> {
             [self.yaw, self.pitch]
         };
         let scale = self.view_scale();
-        // Block displays' models, drawn after the loop (it borrows the displays).
+        // Block displays' models and item displays' stacks, drawn after the
+        // loop (it borrows the displays).
         let mut blocks = Vec::new();
-        for display in self.text_displays.values_mut() {
+        let mut item_work = Vec::new();
+        for (id, display) in self.text_displays.iter_mut() {
             display.last_progress = display.progress(partial as f32);
             let d = display.shown.blend(&display.from, display.last_progress);
-            let position = display.previous.lerp(display.position, partial);
+            // While the display rides a mob (`SetPassengers`), the carrier's
+            // interpolated position is its; its own move waits.
+            let carrier = display
+                .riding
+                .and_then(|v| self.mobs.iter().find(|m| m.id == v))
+                .map(|m| m.previous.lerp(m.position, partial))
+                .map(|p| glam::DVec3::new(p.x, p.y, p.z));
+            let position = display.place(partial, carrier);
             let range = f64::from(d.view_range) * 64.0 * scale;
-            let empty = display.block.is_none() && d.text.is_empty();
+            let empty = display.empty(d.text.is_empty());
             if position.distance_squared(camera) >= range * range || empty {
                 continue;
             }
@@ -205,6 +237,18 @@ impl Game<'_> {
                     * d.matrix(rotation, angles);
                 if matrix.is_finite() && state.0 != 0 {
                     blocks.push((state, matrix, position, d.brightness));
+                }
+                continue;
+            }
+            // ItemDisplayRenderer: the item's model, resolved with no
+            // context (as vanilla's display renders it), through the
+            // display's transform; drawn after the loop, which borrows the
+            // displays.
+            if let Some(stack) = display.item.clone() {
+                let matrix = glam::Mat4::from_translation((position - camera).as_vec3())
+                    * d.matrix(rotation, angles);
+                if matrix.is_finite() {
+                    item_work.push((stack, matrix, position, d.brightness, *id));
                 }
                 continue;
             }
@@ -323,6 +367,27 @@ impl Game<'_> {
             self.block_model_vertices(state, 0, matrix, light, true, normal);
             self.text_display_vertices += normal.len() - start;
         }
+        for (stack, matrix, position, brightness, id) in item_work {
+            let light = if brightness == -1 {
+                let world = self.world.light(
+                    position.x.floor() as i32,
+                    position.y.floor() as i32,
+                    position.z.floor() as i32,
+                );
+                horizon_client::block_entity_render::vertex_light(world)
+            } else {
+                ((brightness as u32 >> 20 & 15) * 16) | (((brightness as u32 >> 4 & 15) * 16) << 8)
+            };
+            let start = normal.len();
+            let state = self.resolve_item(
+                &stack,
+                horizon_assets::item_model::DisplayContext::None,
+                None,
+                id,
+            );
+            self.submit_item_world(&state, matrix, light, normal);
+            self.text_display_vertices += normal.len() - start;
+        }
     }
 }
 
@@ -348,5 +413,38 @@ mod tests {
         d.tick();
         assert_eq!(d.position.x, 2.0);
         assert_eq!(d.shown.blend(&d.from, d.progress(0.0)).translation[0], 2.0);
+    }
+
+    /// An item display draws nothing until its data brings the stack, as a
+    /// block display shows air: `spawn_remote_object` has no stack to give.
+    #[test]
+    fn an_item_display_draws_nothing_until_its_stack_comes() {
+        let mut d = RemoteTextDisplay::new_item([0.0; 3], 0.0);
+        d.tick();
+        assert!(d.empty(d.shown.text.is_empty()));
+        d.item = Some(horizon_client::items::ItemStack {
+            item: "minecraft:nether_star".into(),
+            count: 1,
+            damage: 0,
+            extra: None,
+        });
+        assert!(!d.empty(d.shown.text.is_empty()));
+    }
+
+    /// While a display rides a mob, the carrier's position is the display's;
+    /// a move of its own — even one that would snap it there at once —
+    /// waits until it is put down.
+    #[test]
+    fn a_riding_display_sits_where_its_carrier_is() {
+        let mut d = RemoteTextDisplay::new([0.0; 3], 0.0);
+        d.riding = Some(7);
+        d.move_to([10.0, 0.0, 0.0], None);
+        d.tick();
+        let carrier = glam::DVec3::new(3.0, 64.0, 3.0);
+        assert_eq!(d.place(0.5, Some(carrier)), carrier);
+        d.riding = None;
+        d.move_to([10.0, 0.0, 0.0], None);
+        d.tick();
+        assert_eq!(d.place(0.5, None).x, 10.0);
     }
 }

@@ -45,6 +45,11 @@ impl Game<'_> {
                 id as i32,
                 super::text_displays::RemoteTextDisplay::new_block(position, yaw),
             );
+        } else if kind == "minecraft:item_display" {
+            self.text_displays.insert(
+                id as i32,
+                super::text_displays::RemoteTextDisplay::new_item(position, yaw),
+            );
         } else if let Some(cart) = super::minecarts::CartKind::from_id(kind) {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
             c.yaw = yaw;
@@ -124,7 +129,17 @@ impl Game<'_> {
 
     /// `handleSetEntityData` for an object: what changes how it looks.
     pub(super) fn remote_object_data(&mut self, id: i32, values: &[(u8, i32, Value)]) {
-        if let Some(display) = self.text_displays.get_mut(&id) {
+        if self.text_displays.contains_key(&id) {
+            // ItemDisplay.DATA_ITEM_STACK_ID: the stack comes as the network
+            // keeps it, decoded where the registries are.
+            let item = values.iter().find_map(|(i, _, value)| match (*i, value) {
+                (23, Value::Item(stack)) => self.to_stack(stack),
+                _ => None,
+            });
+            let display = self.text_displays.get_mut(&id).expect("checked above");
+            if let Some(item) = item {
+                display.item = Some(item);
+            }
             display.metadata(values);
             return;
         }
