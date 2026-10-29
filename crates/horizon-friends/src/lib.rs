@@ -181,7 +181,9 @@ mod tests {
         // thread shuts the socket down, while a read begun afterwards sees
         // the end as any platform does.
         std::thread::sleep(Duration::from_millis(200));
-        ended.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        ended
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let started = Instant::now();
         assert_eq!(ended.read(&mut [0u8; 1]).unwrap(), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
