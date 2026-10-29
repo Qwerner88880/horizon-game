@@ -34,6 +34,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `redstone` | [`redstone`](#redstone) | read the redstone signals around its blocks and give redstone signals out of them |
 | `effects` | [`effects`](#effects) | show particles and play sounds in the world for the players near them |
 | `game-events` | [`game-events`](#game-events) | be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns |
+| `config` | [`config`](#config) | keep settings in a file you can edit while the game runs, and read them |
 
 ## World `horizon-mod`
 
@@ -53,8 +54,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `server-events`
+- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `config`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `config-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -69,6 +70,13 @@ The game's side of `block-use-events`: a world of its own, so server mods built 
 
 - Imports (what the game offers): `players`
 - Exports (what the mod provides): `block-use-events`
+
+## World `config-host`
+
+The game's side of capability `config`: a world of its own, so server mods built before it (no `config-events` export) still load.
+
+- Imports (what the game offers): `config`
+- Exports (what the mod provides): `config-events`
 
 ## World `game-events-host`
 
@@ -1401,6 +1409,82 @@ What the server calls in a server mod with capability `entities`. A server mod b
 | `died` | `func(entity: entity)` | A mob of the mod died, whatever killed it: told once, as it starts to fall; its loot drops as vanilla's. |
 | `removed` | `func(entity: entity)` | A mob of the mod is gone: after its death, removed, or despawned. Its last state. |
 | `used` | `func(player: player, entity: entity)` | A player right-clicked a mob of the mod that takes the use. |
+
+## `config`
+
+Access: capability `config`.
+
+Capability `config`, server mods only (manifest `api = "0.3"`, experimental): settings the mod declares once and the player edits in a file, `config/<mod id>.toml` beside the mod, while the game runs. The mod gives each entry a key, a description, a kind (a flag, a whole number or a number inside limits, text, one of some choices) and a default; the game writes the file with the descriptions and limits as comments, reads it again when it changes, and puts back the default for a value that is missing or wrong (and says why in the log). The mod reads values with `get` and hears `config-events.changed` when an edit changed some.
+
+### record `integer-spec`
+
+| Field | Type | |
+| --- | --- | --- |
+| `initial` | `s64` |  |
+| `min` | `s64` |  |
+| `max` | `s64` |  |
+
+### record `number-spec`
+
+| Field | Type | |
+| --- | --- | --- |
+| `initial` | `f64` |  |
+| `min` | `f64` |  |
+| `max` | `f64` |  |
+
+### record `choice-spec`
+
+| Field | Type | |
+| --- | --- | --- |
+| `initial` | `string` |  |
+| `options` | `list<string>` | 1 to 32 options of 1 to 64 bytes: the value is one of them. |
+
+### variant `spec`
+
+What an entry holds, with its default and limits.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `flag` | `bool` | true or false, with its default. |
+| `integer` | `integer-spec` |  |
+| `number` | `number-spec` |  |
+| `text` | `string` | Text up to 1024 bytes, with its default. |
+| `choice` | `choice-spec` |  |
+
+### record `entry`
+
+| Field | Type | |
+| --- | --- | --- |
+| `key` | `string` | `[a-z0-9_.-]{1,64}`, the key in the file. |
+| `description` | `string` | Up to 512 bytes, written above the entry in the file. |
+| `spec` | `spec` |  |
+
+### variant `value`
+
+A value: a choice is text.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `flag` | `bool` |  |
+| `integer` | `s64` |  |
+| `number` | `f64` |  |
+| `text` | `string` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `declare` | `func(entries: list<entry>) -> result<_, string>` | Declares the mod's entries (up to 128; a second call replaces them) and reads the file: the file is written with every entry when it is missing or lacks one. An error for a bad key, a default outside its limits, an empty choice or a key twice. Call it in `init`. |
+| `get` | `func(key: string) -> option<value>` | The value of an entry, as the file holds it now: none for a key the mod did not declare. |
+| `set` | `func(key: string, value: value) -> result<_, string>` | Sets an entry and writes the file, for a command or a screen of the mod's own. An error for an undeclared key, another kind of value, or a value outside the limits. The mod is not told of its own change. |
+
+## `config-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `config`. A server mod built before it has no such export and keeps working.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `changed` | `func(keys: list<string>)` | The file was edited and these entries have new values (checked: a wrong value is already its default again). The game looks every five seconds. |
 
 ## `game-events`
 

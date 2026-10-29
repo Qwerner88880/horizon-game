@@ -126,6 +126,19 @@ mod entity_bindings {
         },
     });
 }
+/// Capability `config`'s world: its own, so server mods built before it (no
+/// `config-events` export) still load.
+mod config_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "config-host",
+    });
+}
+use config_bindings::{ConfigHost, horizon::mods::config as mod_config};
+/// How many ticks pass between two looks at the config files.
+pub const CONFIG_POLL: u64 = 100;
+/// Config files one hook call may write.
+const CONFIG_WRITES_PER_CALL: u32 = 16;
 /// Capability `game-events`' world: its own, so server mods built before it
 /// (no `game-events` export) still load. `players` is the server world's.
 mod game_event_bindings {
@@ -800,6 +813,8 @@ struct Running {
     redstone: Option<RedstoneHost>,
     /// Capability `game-events`: the `game-events` export.
     game_events: Option<GameEventsHost>,
+    /// Capability `config`: the `config-events` export.
+    config: Option<ConfigHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -926,6 +941,11 @@ struct State {
     entity_spawns: u32,
     /// Particles and sounds this call has sent.
     effects_sent: u32,
+    /// Capability `config`: the mod's entries and values, the file they are
+    /// kept in, and the writes this call made.
+    config: crate::config::Config,
+    config_path: PathBuf,
+    config_writes: u32,
     /// Messages and bytes this hook call has sent (reset per call).
     net_sent: (u32, usize),
 }
@@ -1338,6 +1358,39 @@ impl Mods {
             }
             None => Ok(()),
         });
+    }
+    /// Each `CONFIG_POLL` ticks: looks at the config files (capability
+    /// `config`) and tells the mods what a hand edit changed.
+    pub fn config_tick(&mut self, tick: u64) {
+        if tick.is_multiple_of(CONFIG_POLL) {
+            self.config_reload();
+        }
+    }
+    /// Reads each running mod's config file now when it differs from what
+    /// the mod last saw (a value put right is written back), and tells the
+    /// mod which entries changed.
+    pub fn config_reload(&mut self) {
+        for i in 0..self.entries.len() {
+            let Some(run) = self.entries[i].run.as_mut() else {
+                continue;
+            };
+            let state = run.store.data_mut();
+            if state.config.entries().is_empty() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&state.config_path).ok();
+            let reload = state.config.read(text.as_deref());
+            state.apply_config_reload(&reload);
+            if reload.changed.is_empty() {
+                continue;
+            }
+            self.call(i, FUEL_EVENT, |run| match &run.config {
+                Some(h) => h
+                    .horizon_mods_config_events()
+                    .call_changed(&mut run.store, &reload.changed),
+                None => Ok(()),
+            });
+        }
     }
     /// Tells every running mod with capability `game-events` of an event.
     fn game_event(
@@ -1979,6 +2032,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             redstone::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            mod_config::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             effects::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
@@ -2055,6 +2110,11 @@ impl Mods {
         if let Some(why) = crate::api_level::too_new(level, function) {
             return Err(why);
         }
+        let config_path = path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(crate::config::DIR)
+            .join(format!("{}.toml", m.id));
         let data_dir = path
             .parent()
             .unwrap_or(Path::new("."))
@@ -2092,6 +2152,9 @@ impl Mods {
             mod_entities,
             entity_spawns: 0,
             effects_sent: 0,
+            config: Default::default(),
+            config_path,
+            config_writes: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -2209,6 +2272,12 @@ impl Mods {
             true => EntityHost::new(&mut store, &instance).ok(),
             false => None,
         };
+        // `config-events`: a server mod built before the capability has no
+        // export and keeps working, hearing nothing of edits.
+        let config_export = match server && m.capabilities.contains(&crate::Capability::Config) {
+            true => ConfigHost::new(&mut store, &instance).ok(),
+            false => None,
+        };
         // `game-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing.
         let game_events_export =
@@ -2253,6 +2322,7 @@ impl Mods {
             entities: entity_export,
             redstone: redstone_export,
             game_events: game_events_export,
+            config: config_export,
         }))
     }
 
@@ -2339,6 +2409,7 @@ impl Mods {
         run.store.data_mut().net_sent = (0, 0);
         run.store.data_mut().entity_spawns = 0;
         run.store.data_mut().effects_sent = 0;
+        run.store.data_mut().config_writes = 0;
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
         // An average over about the last 64 calls.
@@ -3769,6 +3840,95 @@ impl State {
         }
         self.effects_sent += 1;
         Ok(())
+    }
+}
+impl State {
+    /// Writes the config file (capability `config`).
+    fn write_config(&self, text: &str) -> Result<(), String> {
+        if let Some(dir) = self.config_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&self.config_path, text).map_err(|e| e.to_string())
+    }
+    /// What a reading of the file asks of the game: the file put right, and
+    /// what was wrong in it said in the log.
+    fn apply_config_reload(&mut self, reload: &crate::config::Reload) {
+        for p in &reload.problems {
+            log::warn!("Horizon: mod {} config: {p}", self.id);
+        }
+        if let Some(text) = &reload.rewrite
+            && let Err(e) = self.write_config(text)
+        {
+            log::warn!("Horizon: mod {} config not written: {e}", self.id);
+        }
+    }
+}
+fn config_spec_from_wit(s: mod_config::Spec) -> crate::config::Spec {
+    use crate::config::Spec;
+    match s {
+        mod_config::Spec::Flag(b) => Spec::Boolean(b),
+        mod_config::Spec::Integer(i) => Spec::Integer {
+            default: i.initial,
+            min: i.min,
+            max: i.max,
+        },
+        mod_config::Spec::Number(n) => Spec::Number {
+            default: n.initial,
+            min: n.min,
+            max: n.max,
+        },
+        mod_config::Spec::Text(t) => Spec::Text(t),
+        mod_config::Spec::Choice(c) => Spec::Choice {
+            default: c.initial,
+            options: c.options,
+        },
+    }
+}
+fn config_value_from_wit(v: mod_config::Value) -> crate::config::Value {
+    use crate::config::Value;
+    match v {
+        mod_config::Value::Flag(b) => Value::Boolean(b),
+        mod_config::Value::Integer(n) => Value::Integer(n),
+        mod_config::Value::Number(n) => Value::Number(n),
+        mod_config::Value::Text(t) => Value::Text(t),
+    }
+}
+fn config_value_to_wit(v: &crate::config::Value) -> mod_config::Value {
+    use crate::config::Value;
+    match v {
+        Value::Boolean(b) => mod_config::Value::Flag(*b),
+        Value::Integer(n) => mod_config::Value::Integer(*n),
+        Value::Number(n) => mod_config::Value::Number(*n),
+        Value::Text(t) => mod_config::Value::Text(t.clone()),
+    }
+}
+impl mod_config::Host for State {
+    fn declare(&mut self, entries: Vec<mod_config::Entry>) -> Result<(), String> {
+        let entries = entries
+            .into_iter()
+            .map(|e| crate::config::Entry {
+                key: e.key,
+                description: e.description,
+                spec: config_spec_from_wit(e.spec),
+            })
+            .collect();
+        let text = std::fs::read_to_string(&self.config_path).ok();
+        let reload = self.config.declare(entries, text.as_deref())?;
+        self.apply_config_reload(&reload);
+        Ok(())
+    }
+    fn get(&mut self, key: String) -> Option<mod_config::Value> {
+        self.config.get(&key).map(config_value_to_wit)
+    }
+    fn set(&mut self, key: String, value: mod_config::Value) -> Result<(), String> {
+        if self.config_writes >= CONFIG_WRITES_PER_CALL {
+            return Err(format!(
+                "at most {CONFIG_WRITES_PER_CALL} config writes a call"
+            ));
+        }
+        let text = self.config.set(&key, &config_value_from_wit(value))?;
+        self.config_writes += 1;
+        self.write_config(&text)
     }
 }
 impl effects::Host for State {

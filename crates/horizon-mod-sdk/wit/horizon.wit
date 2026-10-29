@@ -1476,6 +1476,78 @@ interface entity-events {
     used: func(player: player, entity: entity);
 }
 
+/// Capability `config`, server mods only (manifest `api = "0.3"`,
+/// experimental): settings the mod declares once and the player edits in a
+/// file, `config/<mod id>.toml` beside the mod, while the game runs. The mod
+/// gives each entry a key, a description, a kind (a flag, a whole number or a
+/// number inside limits, text, one of some choices) and a default; the game
+/// writes the file with the descriptions and limits as comments, reads it
+/// again when it changes, and puts back the default for a value that is
+/// missing or wrong (and says why in the log). The mod reads values with
+/// `get` and hears `config-events.changed` when an edit changed some.
+interface config {
+    record integer-spec {
+        initial: s64,
+        min: s64,
+        max: s64,
+    }
+    record number-spec {
+        initial: f64,
+        min: f64,
+        max: f64,
+    }
+    record choice-spec {
+        initial: string,
+        /// 1 to 32 options of 1 to 64 bytes: the value is one of them.
+        options: list<string>,
+    }
+    /// What an entry holds, with its default and limits.
+    variant spec {
+        /// true or false, with its default.
+        flag(bool),
+        integer(integer-spec),
+        number(number-spec),
+        /// Text up to 1024 bytes, with its default.
+        text(string),
+        choice(choice-spec),
+    }
+    record entry {
+        /// `[a-z0-9_.-]{1,64}`, the key in the file.
+        key: string,
+        /// Up to 512 bytes, written above the entry in the file.
+        description: string,
+        spec: spec,
+    }
+    /// A value: a choice is text.
+    variant value {
+        flag(bool),
+        integer(s64),
+        number(f64),
+        text(string),
+    }
+    /// Declares the mod's entries (up to 128; a second call replaces them)
+    /// and reads the file: the file is written with every entry when it is
+    /// missing or lacks one. An error for a bad key, a default outside its
+    /// limits, an empty choice or a key twice. Call it in `init`.
+    declare: func(entries: list<entry>) -> result<_, string>;
+    /// The value of an entry, as the file holds it now: none for a key the
+    /// mod did not declare.
+    get: func(key: string) -> option<value>;
+    /// Sets an entry and writes the file, for a command or a screen of the
+    /// mod's own. An error for an undeclared key, another kind of value, or
+    /// a value outside the limits. The mod is not told of its own change.
+    set: func(key: string, value: value) -> result<_, string>;
+}
+
+/// What the server calls in a server mod with capability `config`. A server
+/// mod built before it has no such export and keeps working.
+interface config-events {
+    /// The file was edited and these entries have new values (checked: a
+    /// wrong value is already its default again). The game looks every five
+    /// seconds.
+    changed: func(keys: list<string>);
+}
+
 /// Capability `game-events`, server mods only (manifest `api = "0.3"`,
 /// experimental): the server tells the mod what happens to players and the
 /// world, as a mod bus does: a player hurt, dead, back, in another dimension
@@ -1641,6 +1713,7 @@ world horizon-block-mod {
     import entities;
     import redstone;
     import effects;
+    import config;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -1650,6 +1723,7 @@ world horizon-block-mod {
     export entity-events;
     export redstone-events;
     export game-events;
+    export config-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -1666,6 +1740,13 @@ world block-entity-host {
 world use-host {
     import players;
     export block-use-events;
+}
+
+/// The game's side of capability `config`: a world of its own, so server
+/// mods built before it (no `config-events` export) still load.
+world config-host {
+    import config;
+    export config-events;
 }
 
 /// The game's side of capability `game-events`: a world of its own, so

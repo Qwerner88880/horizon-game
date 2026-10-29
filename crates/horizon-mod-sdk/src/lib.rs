@@ -207,6 +207,7 @@ pub mod server {
     pub use crate::network;
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
     pub use exports::horizon::mods::block_use_events::{Guest as __UseGuest, UsedBlock};
+    pub use exports::horizon::mods::config_events::Guest as __ConfigGuest;
     pub use exports::horizon::mods::entity_events::Guest as __EntityGuest;
     pub use exports::horizon::mods::game_events::Guest as __GameEventsGuest;
     pub use exports::horizon::mods::item_events::{
@@ -221,6 +222,10 @@ pub mod server {
         ServerCommand,
     };
     pub use horizon::mods::block_entities;
+    pub use horizon::mods::config::{
+        self, ChoiceSpec, Entry as ConfigEntry, IntegerSpec, NumberSpec, Spec as ConfigSpec,
+        Value as ConfigValue,
+    };
     pub use horizon::mods::displays::{self, Shape, Transform};
     pub use horizon::mods::effects::{self, Particle};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
@@ -344,6 +349,10 @@ pub mod server {
         /// A player right-clicked a mob that takes the use
         /// ([`SpawnOptions::takes_use`]).
         fn entity_used(&mut self, _player: &Player, _entity: &ModEntity) {}
+        /// The config file was edited and these entries have new values
+        /// (capability `config`): read them with [`config_integer`] and the
+        /// like. Not told of the mod's own `config::set`.
+        fn config_changed(&mut self, _keys: &[String]) {}
         /// A player's health fell by `amount` points, to `health` (capability
         /// `game-events`): any damage, whatever its source. Not told for the
         /// damage that killed them (`player_died` follows).
@@ -466,6 +475,81 @@ pub mod server {
         pub fn health(mut self, health: f32) -> Self {
             self.health = Some(health);
             self
+        }
+    }
+
+    /// The whole number in config entry `key` (capability `config`), or
+    /// `fallback` for a key the mod did not declare or another kind.
+    pub fn config_integer(key: &str, fallback: i64) -> i64 {
+        match config::get(key) {
+            Some(ConfigValue::Integer(n)) => n,
+            _ => fallback,
+        }
+    }
+    /// The number in config entry `key`, or `fallback`.
+    pub fn config_number(key: &str, fallback: f64) -> f64 {
+        match config::get(key) {
+            Some(ConfigValue::Number(n)) => n,
+            _ => fallback,
+        }
+    }
+    /// The flag in config entry `key`, or `fallback`.
+    pub fn config_flag(key: &str, fallback: bool) -> bool {
+        match config::get(key) {
+            Some(ConfigValue::Flag(b)) => b,
+            _ => fallback,
+        }
+    }
+    /// The text (or choice) in config entry `key`, or `fallback`.
+    pub fn config_text(key: &str, fallback: &str) -> String {
+        match config::get(key) {
+            Some(ConfigValue::Text(t)) => t,
+            _ => fallback.to_owned(),
+        }
+    }
+
+    impl ConfigEntry {
+        fn new(key: &str, description: &str, spec: ConfigSpec) -> Self {
+            Self {
+                key: key.into(),
+                description: description.into(),
+                spec,
+            }
+        }
+        /// A true or false setting.
+        pub fn flag(key: &str, description: &str, initial: bool) -> Self {
+            Self::new(key, description, ConfigSpec::Flag(initial))
+        }
+        /// A whole number from `min` to `max`.
+        pub fn integer(key: &str, description: &str, initial: i64, min: i64, max: i64) -> Self {
+            Self::new(
+                key,
+                description,
+                ConfigSpec::Integer(IntegerSpec { initial, min, max }),
+            )
+        }
+        /// A number from `min` to `max`.
+        pub fn number(key: &str, description: &str, initial: f64, min: f64, max: f64) -> Self {
+            Self::new(
+                key,
+                description,
+                ConfigSpec::Number(NumberSpec { initial, min, max }),
+            )
+        }
+        /// Text.
+        pub fn text(key: &str, description: &str, initial: &str) -> Self {
+            Self::new(key, description, ConfigSpec::Text(initial.into()))
+        }
+        /// One of `options`.
+        pub fn choice(key: &str, description: &str, initial: &str, options: &[&str]) -> Self {
+            Self::new(
+                key,
+                description,
+                ConfigSpec::Choice(ChoiceSpec {
+                    initial: initial.into(),
+                    options: options.iter().map(|o| (*o).to_owned()).collect(),
+                }),
+            )
         }
     }
 
@@ -885,6 +969,11 @@ macro_rules! export_server_mod {
                 }
                 fn used(player: Player, entity: $crate::server::ModEntity) {
                     with(|m| m.entity_used(&player, &entity))
+                }
+            }
+            impl $crate::server::__ConfigGuest for Export {
+                fn changed(keys: Vec<String>) {
+                    with(|m| m.config_changed(&keys))
                 }
             }
             impl $crate::server::__GameEventsGuest for Export {

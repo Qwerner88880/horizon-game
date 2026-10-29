@@ -9,6 +9,7 @@ pub mod api_level;
 pub mod block_entities;
 #[cfg(feature = "runtime")]
 pub mod commands;
+pub mod config;
 pub mod content;
 pub mod energy;
 pub mod fluids;

@@ -143,9 +143,11 @@ pub enum Capability {
     Effects,
     /// Notices of what happens to players and the world (server mods).
     GameEvents,
+    /// Settings the player edits in a file (server mods).
+    Config,
 }
 impl Capability {
-    pub const ALL: [Capability; 27] = [
+    pub const ALL: [Capability; 28] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -173,6 +175,7 @@ impl Capability {
         Capability::Redstone,
         Capability::Effects,
         Capability::GameEvents,
+        Capability::Config,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's.
@@ -201,6 +204,7 @@ impl Capability {
                 | Capability::Redstone
                 | Capability::Effects
                 | Capability::GameEvents
+                | Capability::Config
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -233,6 +237,7 @@ impl Capability {
             Capability::Redstone => "redstone",
             Capability::Effects => "effects",
             Capability::GameEvents => "game-events",
+            Capability::Config => "config",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -259,6 +264,7 @@ impl Capability {
                 | Capability::Redstone
                 | Capability::Effects
                 | Capability::GameEvents
+                | Capability::Config
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -299,6 +305,9 @@ impl Capability {
             }
             Capability::Network => {
                 "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::Config => {
+                "keep settings in a file you can edit while the game runs, and read them"
             }
             Capability::GameEvents => {
                 "be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns"
@@ -371,6 +380,7 @@ impl fmt::Display for Capability {
             Capability::Redstone => "redstone",
             Capability::Effects => "effects",
             Capability::GameEvents => "game-events",
+            Capability::Config => "config",
         };
         f.write_str(name)
     }

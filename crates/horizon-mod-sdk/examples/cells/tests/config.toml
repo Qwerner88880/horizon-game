@@ -1,0 +1,73 @@
+# Capability config: the cells mod declares its settings once; the game
+# writes config/cells.toml beside it with each entry's description and
+# limits as comments, reads it again when the player edits it, and puts a
+# wrong value back to its default.
+
+# The file is there from the first moment, with the defaults.
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+expect.config-file = [
+  "# Energy a cell makes each tick.",
+  "# 1 to 1000. Default: 5",
+  "charge = 5",
+  "# One of chime, bell, harp. Default: chime",
+  "fx-sound = \"chime\"",
+  "announce-deaths = true",
+]
+
+[[step]]
+ticks = 1
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 5 / 100000 FE"
+
+# The player edits two values while the game runs: the mod hears which
+# changed, and the file gains the entries it lacked.
+[[step]]
+config-file = "charge = 50\nfx-sound = \"bell\"\n"
+expect.broadcast = ["Cells config changed: charge, fx-sound"]
+expect.config-file = ["charge = 50", "fx-sound = \"bell\"", "sentinel-name = \"Sentinel\""]
+
+[[step]]
+ticks = 1
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 55 / 100000 FE"
+
+# The mod's own command sets a value and writes the file; it is not told
+# of its own change.
+[[step]]
+command = "cellconfig charge 7"
+expect.feedback = "charge = 7"
+expect.config-file = ["charge = 7"]
+expect.broadcast = []
+
+[[step]]
+command = "cellconfig charge 5000"
+expect.error = "charge: 5000 is not 1 to 1000"
+
+[[step]]
+command = "cellconfig fx-sound gong"
+expect.error = "fx-sound: \"gong\" is not one of chime, bell, harp"
+
+# A wrong value in the file is its default again, and said.
+[[step]]
+config-file = "charge = 0\n"
+expect.broadcast = ["Cells config changed: charge, fx-sound"]
+expect.config-file = ["charge = 5", "fx-sound = \"chime\""]
+
+# A flag, a number and the list.
+[[step]]
+command = "cellconfig announce-deaths false"
+expect.feedback = "announce-deaths = false"
+
+[[step]]
+game-events = ["died Alex Alex fell"]
+expect.broadcast = []
+
+[[step]]
+command = "cellconfig sentinel-damage-divisor 2"
+expect.feedback = "sentinel-damage-divisor = 2.0"
+
+[[step]]
+command = "cellconfig"
+expect.feedback = "charge = 5; core-multiplier = 10; sentinel-damage-divisor = 2.0; sentinel-name = \"Sentinel\"; fx-sound = \"chime\"; announce-deaths = false"

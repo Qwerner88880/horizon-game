@@ -1047,6 +1047,8 @@ mod run {
             self.mods.net_counts.clear();
             self.mods.mods.server_tick(self.ticks);
             self.mods.mods.block_entity_tick(self.ticks);
+            // Capability `config`: a look at the config files every few seconds.
+            self.mods.mods.config_tick(self.ticks);
             // The mods' mobs: those that started dying or are gone, then the
             // tick, all as the scan at the start of the tick found them.
             for e in std::mem::take(&mut self.mods.mod_entities.died) {

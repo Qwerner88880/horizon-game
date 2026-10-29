@@ -300,6 +300,7 @@ impl TestGame {
             self.mods.tick(self.tick);
             self.mods.server_tick(self.tick);
             self.mods.block_entity_tick(self.tick);
+            self.mods.config_tick(self.tick);
             self.entities_tick();
             self.items_tick();
         }
@@ -530,6 +531,25 @@ impl TestGame {
             lists.push((id.clone(), held));
         }
         self.mods.player_items_tick(self.tick, &lists);
+    }
+    /// The mod's config file (capability `config`), beside its copy.
+    pub fn config_file(&self) -> PathBuf {
+        let id = self.mods.entries()[0]
+            .manifest
+            .as_ref()
+            .map_or_else(String::new, |m| m.id.clone());
+        self.dir.join(crate::config::DIR).join(format!("{id}.toml"))
+    }
+    /// The player edits the config file to `text` and the game looks at it
+    /// (it does that every five seconds; a script need not wait).
+    pub fn edit_config(&mut self, text: &str) -> Result<(), String> {
+        let path = self.config_file();
+        std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
+            .and_then(|()| std::fs::write(&path, text))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.snapshot();
+        self.mods.config_reload();
+        Ok(())
     }
     /// Tells the mods an event of capability `game-events`, written as the
     /// scripts write it: `hurt Alex 4 16` (name, points lost, health after),
@@ -1175,6 +1195,9 @@ pub struct Step {
     use_item: Option<UseItemSet>,
     attack: Option<AttackSet>,
     hurt: Option<HurtSet>,
+    /// Server mods: the player edits the mod's config file (capability
+    /// `config`) to this text, which the mod hears at once, before `chat`.
+    config_file: Option<String>,
     /// Server mods: events of capability `game-events` the mods are told, in
     /// order, after `net` and before `command`: `"hurt Alex 4 16"`, `"died
     /// Alex fell from a high place"`, `"respawned Alex"`, `"dimension Alex
@@ -1224,6 +1247,9 @@ pub struct Expect {
     /// The mod's screen after the step, as [`TestGame::screen_lines`]
     /// shows it; `[]` for no screen open.
     screen: Option<Vec<String>>,
+    /// Text the mod's config file holds after the step (capability
+    /// `config`): each string must be in it.
+    config_file: Option<Vec<String>>,
     /// The particles and sounds the mods sent during the step (capability
     /// `effects`), in order: `particle minecraft:flame x10 @ 0.5 65.0 0.5`
     /// (name, count, place), `sound minecraft:block.anvil.land 1 1.5 block @
@@ -1452,6 +1478,9 @@ impl Step {
             let player = game.players[i].clone();
             game.hold(&player, &hold.item, hold.count, hold.slot.unwrap_or(0));
         }
+        if let Some(text) = &self.config_file {
+            game.edit_config(text)?;
+        }
         game.tick(self.ticks);
         game.frames(self.frames);
         let who = actor.map(|i| game.players[i].clone());
@@ -1664,6 +1693,19 @@ impl Step {
                 })
                 .collect();
             same("net", want, &got)?;
+        }
+        if let Some(want) = &e.config_file {
+            let text = std::fs::read_to_string(game.config_file()).unwrap_or_default();
+            for w in want {
+                if !text.contains(w.as_str()) {
+                    return Err(format!(
+                        "config file
+    expected it to hold: {w:?}
+    got:
+{text}"
+                    ));
+                }
+            }
         }
         if let Some(want) = &e.effects {
             const CATEGORIES: [&str; 10] = [

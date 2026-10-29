@@ -685,6 +685,71 @@ vanilla pipes or hoppers seeing the tanks, fluids placed in the world as
 blocks of the mod's own fluid (a content mod can't declare a fluid yet), and
 showing a tank in a menu as a gauge.
 
+#### Settings (capability `config`, experimental)
+
+Settings a server mod declares once and the player edits in a file while the
+game runs: `config/<mod id>.toml` in the folder the mod is in (`horizon-mods/`).
+The mod gives each entry a key, a description, a kind and a default; the game
+writes the file with the descriptions and limits as comments, reads it again
+when it changes, and puts back the default for a value that is missing or
+wrong (saying why in the log).
+
+```rust
+use horizon_mod_sdk::server::{ConfigEntry, config, config_integer};
+
+// In init: declared once; the file is written if it is missing.
+config::declare(&[
+    ConfigEntry::integer("charge", "Energy a cell makes each tick.", 5, 1, 1000),
+    ConfigEntry::flag("announce-deaths", "Say in the chat when a player dies.", true),
+    ConfigEntry::choice("fx-sound", "The sound /cellfx plays.", "chime", &["chime", "bell"]),
+])?;
+
+// Anywhere after: the value as the file holds it now.
+let charge = config_integer("charge", 5);
+```
+
+```toml
+# Energy a cell makes each tick.
+# 1 to 1000. Default: 5
+charge = 5
+```
+
+- **Entries.** `ConfigEntry::flag`, `integer(.., initial, min, max)`,
+  `number(.., initial, min, max)`, `text` and `choice(.., initial, &[options])`;
+  a key is `[a-z0-9_.-]{1,64}`, a description up to 512 bytes, up to 128
+  entries, a text up to 1024 bytes, a choice has 1 to 32 options. `declare`
+  refuses a default outside its limits, an empty choice or a key twice, and a
+  second call replaces the entries.
+- **Reading.** `config::get(key)` gives a `ConfigValue` (a choice is text);
+  `config_integer`, `config_number`, `config_flag` and `config_text` give the
+  value or a fallback. Reading is a plain call: read a value when the mod needs
+  it, not into a copy that goes stale.
+- **The file.** It is written when the mod declares and the file is missing or
+  lacks an entry. A file whose entries are all there and right is never
+  touched, so the player's own comments stay; when one is missing or wrong the
+  file is written again in full (the player's own comments are lost). A whole number is accepted where a number is wanted. A value of
+  the wrong kind or outside its limits is its default again, the file is
+  written with it put right, and the log says which. A file that does not
+  parse as TOML is left as it is (the mod keeps what it has) and the log says
+  so once.
+- **Edits.** The game looks at the file every five seconds. The mod hears
+  `ServerMod::config_changed(keys)` with the entries whose value changed (a
+  wrong value put back to its default counts when that changed it). It is not
+  told of its own `config::set`.
+- **`config::set(key, value)`** checks and writes, for a command or a screen of
+  the mod's own (the `cells` example's `/cellconfig [key] [value]`). At most
+  16 writes a call.
+- **Test scripts** put new text in the config file with `config-file = "charge
+  = 50
+"` (the mod hears it at once, before `chat`) and check what the file
+  holds with `expect.config-file = ["charge = 50"]` (each string must be in
+  it). The file is there from the start, beside the mod's copy.
+
+**Not yet.** A page in Options > Mods built from the entries (a client mod's
+own `ui::set-settings` page is the way to show settings in the game), settings
+per world (the file is for the whole game folder), settings for client mods
+(`storage` and `ui` are theirs), and lists or tables as values.
+
 #### Game events (capability `game-events`, experimental)
 
 The server tells the mod what happens to players and the world, as a mod bus

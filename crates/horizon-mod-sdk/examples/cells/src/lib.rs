@@ -29,12 +29,13 @@
 //! at a time — their charge is the mod's own bytes on the stack, saved
 //! with it wherever it goes.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
+    Args, Argument, BlockEntity, ConfigEntry, ConfigValue, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
     Multiblock, Particle, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
     RedstoneOutput, Sides, TankSpec, Transform, UsedBlock, block_entities, displays, effects,
     energy, entities, fluids, item_hooks, items, machine_recipes, menus, multiblocks, network, players,
     redstone, saved_data,
 };
+use horizon_mod_sdk::server::{config, config_flag, config_integer, config_number, config_text};
 use std::collections::BTreeMap;
 
 /// The block that becomes a cell.
@@ -44,6 +45,46 @@ const CELL: &str = "minecraft:lodestone";
 const CHARGE: u64 = 5;
 const CAPACITY: u64 = 100_000;
 const CORE_CHARGE: u64 = 10;
+/// The mod's settings (capability `config`), in `config/cells.toml` beside
+/// the mod: the player edits them while the game runs.
+fn config_entries() -> Vec<ConfigEntry> {
+    vec![
+        ConfigEntry::integer(
+            "charge",
+            "Energy a cell makes each tick.",
+            CHARGE as i64,
+            1,
+            1000,
+        ),
+        ConfigEntry::integer(
+            "core-multiplier",
+            "How many times over a standing energy core charges its cell.",
+            CORE_CHARGE as i64,
+            1,
+            100,
+        ),
+        ConfigEntry::number(
+            "sentinel-damage-divisor",
+            "A sentinel takes a player's blow divided by this.",
+            3.0,
+            1.0,
+            10.0,
+        ),
+        ConfigEntry::text("sentinel-name", "The name shown over a sentinel.", "Sentinel"),
+        ConfigEntry::choice(
+            "fx-sound",
+            "The note block sound /cellfx plays.",
+            "chime",
+            &["chime", "bell", "harp"],
+        ),
+        ConfigEntry::flag(
+            "announce-deaths",
+            "Say in the chat when a player dies.",
+            true,
+        ),
+    ]
+}
+
 /// Energy that may flow between two cells side by side each tick.
 const FLOW: u64 = 100;
 
@@ -70,7 +111,10 @@ fn cell_effects(d: &str, x: i32, y: i32, z: i32, level: u8) {
     let _ = effects::spawn_particle(d, &puff);
     let _ = effects::play_sound(
         d,
-        "minecraft:block.note_block.chime",
+        &format!(
+            "minecraft:block.note_block.{}",
+            config_text("fx-sound", "chime")
+        ),
         cx,
         f64::from(y) + 0.5,
         cz,
@@ -116,9 +160,10 @@ const SENTINEL_KIND: &str = "minecraft:iron_golem";
 /// Ticks between two points of health a sentinel mends.
 const MEND_EVERY: u64 = 20;
 
-/// The damage a sentinel lets a player's blow deal.
-fn sentinel_damage(damage: f32) -> f32 {
-    damage / 3.0
+/// The damage a sentinel lets a player's blow deal, with the divisor the
+/// config gives.
+fn sentinel_damage(damage: f32, divisor: f32) -> f32 {
+    damage / divisor
 }
 
 /// The cell each player's open menu shows, by player id.
@@ -571,6 +616,8 @@ impl ServerMod for Cells {
         // (docs/mods.md): read them once here and keep them, not each tick.
         let recipes = machine_recipes::all(&[KIND.to_string()]);
         let structures = multiblocks::all();
+        // The settings: declared once, the file written if it is missing.
+        config::declare(&config_entries())?;
         Ok((
             Cells {
                 recipes,
@@ -588,6 +635,13 @@ impl ServerMod for Cells {
                 .command_with("cellrecipes", [])
                 .command_with("sentinel", [])
                 .command_with("cellfx", [Argument::block_pos("pos").optional()])
+                .command_with(
+                    "cellconfig",
+                    [
+                        Argument::word("key").optional(),
+                        Argument::text("value").optional(),
+                    ],
+                )
                 .command_with(
                     "cellfluid",
                     [
@@ -612,6 +666,9 @@ impl ServerMod for Cells {
     }
 
     fn block_entity_tick(&mut self, tick: u64, entities: &[BlockEntity]) {
+        // The settings, read once a tick.
+        let charge = config_integer("charge", CHARGE as i64) as u64;
+        let core_multiplier = config_integer("core-multiplier", CORE_CHARGE as i64) as u64;
         // Cells share only within a dimension.
         let mut dimensions: BTreeMap<&str, BTreeMap<(i32, i32, i32), (u64, u64)>> = BTreeMap::new();
         for e in entities {
@@ -687,9 +744,9 @@ impl ServerMod for Cells {
                     if self.powered.contains(&(d.to_owned(), x, y, z)) {
                         0
                     } else if self.cores.contains(&(d.to_owned(), x, y, z)) {
-                        CHARGE * CORE_CHARGE
+                        charge * core_multiplier
                     } else {
-                        CHARGE
+                        charge
                     },
                 ),
             );
@@ -795,6 +852,44 @@ impl ServerMod for Cells {
         if name == "cellrecipes" {
             return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
         }
+        if name == "cellconfig" {
+            // Capability `config`: no key lists the settings, a key shows
+            // one, a key and a value sets it (and writes the file).
+            let entries = config_entries();
+            let show = |e: &ConfigEntry| match config::get(&e.key) {
+                Some(ConfigValue::Flag(b)) => format!("{} = {b}", e.key),
+                Some(ConfigValue::Integer(n)) => format!("{} = {n}", e.key),
+                Some(ConfigValue::Number(n)) => format!("{} = {n:?}", e.key),
+                Some(ConfigValue::Text(t)) => format!("{} = {t:?}", e.key),
+                None => format!("{} is not set", e.key),
+            };
+            let Some(key) = args.string("key") else {
+                let all: Vec<String> = entries.iter().map(show).collect();
+                return Ok(Some(all.join("; ")));
+            };
+            let entry = entries
+                .iter()
+                .find(|e| e.key == key)
+                .ok_or_else(|| format!("No setting {key}"))?;
+            let Some(text) = args.string("value") else {
+                return Ok(Some(show(entry)));
+            };
+            let text = text.trim();
+            let value = match config::get(key) {
+                Some(ConfigValue::Flag(_)) => ConfigValue::Flag(
+                    text.parse().map_err(|_| "A flag is true or false")?,
+                ),
+                Some(ConfigValue::Integer(_)) => ConfigValue::Integer(
+                    text.parse().map_err(|_| "That is not a whole number")?,
+                ),
+                Some(ConfigValue::Number(_)) => {
+                    ConfigValue::Number(text.parse().map_err(|_| "That is not a number")?)
+                }
+                _ => ConfigValue::Text(text.to_owned()),
+            };
+            config::set(key, &value)?;
+            return Ok(Some(show(entry)));
+        }
         if name == "cellfx" {
             let (x, y, z) = target(player, args);
             let d = &player.dimension;
@@ -848,7 +943,7 @@ impl ServerMod for Cells {
                 player.z,
                 &SpawnOptions::new(SENTINEL_KIND, SENTINEL)
                     .takes_use()
-                    .named("Sentinel"),
+                    .named(&config_text("sentinel-name", "Sentinel")),
             )?;
             return Ok(Some(format!("A sentinel stands guard (entity {id})")));
         }
@@ -1184,7 +1279,7 @@ impl ServerMod for Cells {
         damage: f32,
     ) -> Result<f32, String> {
         Ok(if entity.tag == SENTINEL {
-            sentinel_damage(damage)
+            sentinel_damage(damage, config_number("sentinel-damage-divisor", 3.0) as f32)
         } else {
             damage
         })
@@ -1211,8 +1306,15 @@ impl ServerMod for Cells {
         ));
     }
 
+    fn config_changed(&mut self, keys: &[String]) {
+        players::broadcast(&format!("Cells config changed: {}", keys.join(", ")));
+    }
+
     fn player_died(&mut self, player: &Player, cause: &str) {
         // Capability `game-events`.
+        if !config_flag("announce-deaths", true) {
+            return;
+        }
         players::broadcast(&if cause.is_empty() {
             format!("{} died", player.name)
         } else {
@@ -1314,8 +1416,9 @@ mod tests {
 
     #[test]
     fn a_sentinel_takes_a_third_of_a_blow() {
-        assert_eq!(sentinel_damage(6.0), 2.0);
-        assert_eq!(sentinel_damage(0.0), 0.0);
+        assert_eq!(sentinel_damage(6.0, 3.0), 2.0);
+        assert_eq!(sentinel_damage(0.0, 3.0), 0.0);
+        assert_eq!(sentinel_damage(6.0, 2.0), 3.0);
     }
 
     #[test]
