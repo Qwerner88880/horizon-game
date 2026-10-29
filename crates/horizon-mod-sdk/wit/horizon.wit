@@ -813,6 +813,61 @@ interface machine-recipes {
     by-input: func(stack: stack, kinds: list<string>) -> list<machine-recipe>;
 }
 
+/// Capability `multiblocks`, server mods only (manifest `api = "0.3"`,
+/// experimental): the mod's multiblock structures. Templates come from its
+/// `data/<id>/multiblock/` files, loaded once before the mod starts (as
+/// `machine-recipes` are); `check` matches a template against the world at
+/// a position and a turn. Needs capabilities `block-entities` (the anchor)
+/// and `world`.
+interface multiblocks {
+    record structure {
+        /// `<id>:<path>`: the file's place under `data/<id>/multiblock/`.
+        id: string,
+        /// The shape's size in blocks: cells along x, layers along y,
+        /// rows along z.
+        width: u32,
+        height: u32,
+        depth: u32,
+        /// The shape's cell the anchor sits on: the mod's block entity
+        /// whose position a `check` takes.
+        anchor: tuple<u32, u32, u32>,
+        /// The shape's checked cells (`any` cells are left out): each with
+        /// its offset from the anchor and the blocks that fit it.
+        cells: list<cell>,
+        /// The file's whole JSON text, for the fields only the mod knows.
+        data: string,
+    }
+    record cell {
+        dx: s32,
+        dy: s32,
+        dz: s32,
+        /// Any of these block ids fits; `minecraft:air` names a cell that
+        /// must be empty. Block states (properties) are not matched.
+        blocks: list<string>,
+    }
+    record mismatch {
+        /// Where in the world.
+        x: s32,
+        y: s32,
+        z: s32,
+        /// The block the template takes there, as `minecraft:iron_block`.
+        expected: string,
+        /// What is there, as `minecraft:oak_log[axis=y]`.
+        found: string,
+    }
+    /// The mod's structures, loaded before `init` and never changed while
+    /// it runs — call once in `init` and keep. At most 64 a mod.
+    all: func() -> list<structure>;
+    /// Matches structure `id` against the world with its anchor's block
+    /// entity at a position, turned by `quarter` quarter turns clockwise
+    /// looked at from above (0 to 3; y offsets don't turn). ok(none): the
+    /// structure is whole; ok(some): the first mismatches, at most 16.
+    /// Err for no such structure of this mod, a `quarter` past 3, no chunk
+    /// of the structure loaded, or no world lent (this is a read of the
+    /// server's world: it answers during the server's hooks).
+    check: func(dimension: string, x: s32, y: s32, z: s32, quarter: u32, id: string) -> result<option<list<mismatch>>, string>;
+}
+
 /// Capability `menus`, server mods only (manifest `api = "0.3"`,
 /// experimental): chest menus the mod opens for a player, with items of its
 /// own in the slots. Players see and click them but can't take the items;
@@ -1085,6 +1140,7 @@ world horizon-block-mod {
     import displays;
     import items;
     import machine-recipes;
+    import multiblocks;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -1121,6 +1177,11 @@ world menu-host {
 /// The game's side of capability `machine-recipes` (imports only).
 world machine-recipes-host {
     import machine-recipes;
+}
+
+/// The game's side of capability `multiblocks` (imports only).
+world multiblock-host {
+    import multiblocks;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

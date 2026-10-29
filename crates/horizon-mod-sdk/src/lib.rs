@@ -207,6 +207,7 @@ pub mod server {
     pub use horizon::mods::items::{self, Stack};
     pub use horizon::mods::machine_recipes;
     pub use horizon::mods::menus::{self, MenuItem, MenuSlot, SlotMode};
+    pub use horizon::mods::multiblocks;
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange};
 

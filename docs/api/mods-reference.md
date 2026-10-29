@@ -25,6 +25,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `displays` | [`displays`](#displays) | show block models and text of its own in the world |
 | `items` | [`items`](#items) | keep items in its blocks and move items between any mod's blocks |
 | `machine-recipes` | [`machine-recipes`](#machine-recipes) | read the recipes of its own machines from data files |
+| `multiblocks` | [`multiblocks`](#multiblocks) | keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break |
 
 ## World `horizon-mod`
 
@@ -44,7 +45,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `server-events`
 
 ## World `block-entity-host`
@@ -80,6 +81,13 @@ The game's side of capability `menus`: a world of its own, so server mods built 
 The game's side of capability `machine-recipes` (imports only).
 
 - Imports (what the game offers): `machine-recipes`
+- Exports (what the mod provides): 
+
+## World `multiblock-host`
+
+The game's side of capability `multiblocks` (imports only).
+
+- Imports (what the game offers): `multiblocks`
 - Exports (what the mod provides): 
 
 ## World `horizon-ui-mod`
@@ -819,6 +827,48 @@ Capability `machine-recipes`, server mods only (manifest `api = "0.3"`, experime
 | --- | --- | --- |
 | `all` | `func(kinds: list<string>) -> list<machine-recipe>` | The mod's machine recipes of these `kind`s (at most 16; an empty list: every one). They are loaded before `init` and never change while the mod runs — call once in `init` and keep, not each tick. |
 | `by-input` | `func(stack: stack, kinds: list<string>) -> list<machine-recipe>` | Those of `all` a slot of whose `inputs` takes `stack`'s item: the recipes a machine holding `stack` can make now. |
+
+## `multiblocks`
+
+Access: capability `multiblocks`.
+
+Capability `multiblocks`, server mods only (manifest `api = "0.3"`, experimental): the mod's multiblock structures. Templates come from its `data/<id>/multiblock/` files, loaded once before the mod starts (as `machine-recipes` are); `check` matches a template against the world at a position and a turn. Needs capabilities `block-entities` (the anchor) and `world`.
+
+### record `cell`
+
+| Field | Type | |
+| --- | --- | --- |
+| `dx` | `s32` |  |
+| `dy` | `s32` |  |
+| `dz` | `s32` |  |
+| `blocks` | `list<string>` | Any of these block ids fits; `minecraft:air` names a cell that must be empty. Block states (properties) are not matched. |
+
+### record `structure`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | `<id>:<path>`: the file's place under `data/<id>/multiblock/`. |
+| `width` | `u32` | The shape's size in blocks: cells along x, layers along y, rows along z. |
+| `height` | `u32` |  |
+| `depth` | `u32` |  |
+| `anchor` | `tuple<u32, u32, u32>` | The shape's cell the anchor sits on: the mod's block entity whose position a `check` takes. |
+| `cells` | `list<cell>` | The shape's checked cells (`any` cells are left out): each with its offset from the anchor and the blocks that fit it. |
+| `data` | `string` | The file's whole JSON text, for the fields only the mod knows. |
+
+### record `mismatch`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` | Where in the world. |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `expected` | `string` | The block the template takes there, as `minecraft:iron_block`. |
+| `found` | `string` | What is there, as `minecraft:oak_log[axis=y]`. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `all` | `func() -> list<structure>` | The mod's structures, loaded before `init` and never changed while it runs — call once in `init` and keep. At most 64 a mod. |
+| `check` | `func(dimension: string, x: s32, y: s32, z: s32, quarter: u32, id: string) -> result<option<list<mismatch>>, string>` | Matches structure `id` against the world with its anchor's block entity at a position, turned by `quarter` quarter turns clockwise looked at from above (0 to 3; y offsets don't turn). ok(none): the structure is whole; ok(some): the first mismatches, at most 16. Err for no such structure of this mod, a `quarter` past 3, no chunk of the structure loaded, or no world lent (this is a read of the server's world: it answers during the server's hooks). |
 
 ## `menus`
 

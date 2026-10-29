@@ -720,6 +720,57 @@ only namespace (a server mod's manifest may list no other); recipes are not
 per-world and never saved with one, being content; `by-input` matches items,
 not components.
 
+#### Multiblocks (capability `multiblocks`, experimental)
+
+The structures of a server mod's own multiblocks, in its
+`data/<id>/multiblock/` files: the game loads them once, before the mod
+starts, as machine recipes are. Each file is one structure — its `layers`
+(a list from the bottom up, each `depth` rows of `width` characters, x
+along a row and z down them), its `palette` (a character → a block id, a
+list of them (any fits), `"air"` for a cell that must be empty, `"any"`
+for one not checked; a space is always air) and its `anchor`, the shape's
+cell the mod's block entity sits on (`[0, 0, 0]` by default) — and
+whatever else the mod's own fields are: the whole file reaches the mod as
+`data`. The files come from the mod's own package and from a content
+mod's carry of the same id; the package's file wins. At most 64
+structures a mod, 4096 checked cells and 32 a side in one, 16 blocks a
+cell and 16 KiB a file; a mod with this capability may carry only these
+files (and its recipes), under its own id.
+
+```json
+{
+  "anchor": [1, 1, 1],
+  "palette": { "#": "minecraft:iron_block", "C": "minecraft:lodestone", ".": "air" },
+  "layers": [ ["###", "#.#", "###"], ["###", "#C#", "###"], ["###", "#.#", "###"] ]
+}
+```
+
+`multiblocks::all()` lists the mod's structures — call it once in `init`
+and keep the answer, not each tick. `multiblocks::check(dimension, x, y,
+z, quarter, id)` matches structure `id` turned by `quarter` quarter turns
+clockwise looked at from above (y doesn't turn) against the world with
+its anchor at a position: `Ok(None)` — it is whole; `Ok(Some(..))` — the
+first mismatches, at most 16, each where in the world, the block the
+template takes there and what is there; `Err` for a structure the mod
+doesn't carry, a quarter past 3, a position whose chunk isn't loaded, or
+no world lent — it is a read of the server's world, and answers in the
+server's hooks (a command, `block_used`, `block_entity_tick`), not in
+`init`. Fusion crafting works this way: try each quarter, and the first
+mismatch tells the player what to place. A structure is anchored on one
+of the mod's own block entities — the manifest needs capabilities
+`block-entities` and `world` beside `multiblocks` — and a check is only a
+read: to change blocks is `world.set-blocks` as always. The `cells`
+example's `/cellcore [pos]` says its core is whole or names the first
+block it needs (`data/cells/multiblock/` in the example).
+
+**Not yet.** Block states (properties) are not matched, only block ids,
+and a palette names no tags; turns other than quarter ones, and mirrored
+shapes, are not searched (call `check` once a quarter); structures
+without one of the mod's block entities as their anchor cannot be
+checked where they stand; changed files are read at the next start of the
+mods, as machine recipes are; and a structure's coming together and
+breaking is not told to the mod — it checks when it needs to know.
+
 New blocks come from a content mod (API 0.2, capability `registries`) that
 a server mod claims: `horizon-forge convert` carries a Java mod's blocks,
 models and textures over as one.

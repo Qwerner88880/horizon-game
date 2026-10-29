@@ -122,6 +122,8 @@ mod mount_menu;
 mod mounts;
 mod moved_extras;
 mod moving_pistons;
+#[cfg(feature = "mods")]
+mod multiblocks;
 mod music;
 mod names;
 mod native_shaders;

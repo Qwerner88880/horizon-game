@@ -83,6 +83,14 @@ ticks = 2
 command = "cellitems"
 expect.feedback = "Cell at 0 63 0: 0 in, 4 out"
 
+# The core (capability multiblocks, data/cells/multiblock/core.json): a
+# ring of iron around the cell, which /cellcore says is whole or names the
+# first block it needs — the cell's own quarter turn first, the closest
+# missing cell of it.
+[[step]]
+command = "cellcore"
+expect.feedback = "needs minecraft:iron_block at -1 62 -1 (minecraft:air there)"
+
 # The block a cell stood on is checked at the next tick.
 [[step]]
 break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }

@@ -135,12 +135,14 @@ impl TestGame {
 
     fn start(&mut self) -> Result<(), String> {
         let recipes = machine_recipes_of(&self.hmod);
+        let multiblocks = multiblocks_of(&self.hmod);
         self.mods = Mods::load_for(
             Runs::Both,
             std::slice::from_ref(&self.hmod),
             |_| true,
             |_| false,
             recipes,
+            multiblocks,
         );
         match &self.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
@@ -353,6 +355,19 @@ fn machine_recipes_of(
         &files,
         &|_| Vec::new(),
     )))
+}
+
+/// The structures in the mod at `hmod` (capability `multiblocks`), as the
+/// game builds them for its server mods: the package's own
+/// `data/<id>/multiblock/` files, read before the mod starts.
+fn multiblocks_of(hmod: &Path) -> Option<std::sync::Arc<crate::multiblocks::Templates>> {
+    let package = crate::Package::read(hmod).ok()?;
+    let m = &package.manifest;
+    if m.side != crate::Side::Server || !m.capabilities.contains(&crate::Capability::Multiblocks) {
+        return None;
+    }
+    let files = crate::multiblocks::files_in_package(hmod, &m.id);
+    Some(std::sync::Arc::new(crate::multiblocks::build(&files)))
 }
 
 /// A `.hmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).

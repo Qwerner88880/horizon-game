@@ -118,9 +118,13 @@ pub enum Capability {
     /// The recipes of the mod's own machines, from its `data/<id>/recipe/`
     /// files (server mods).
     MachineRecipes,
+    /// The mod's own multiblock structures, from its
+    /// `data/<id>/multiblock/` files, checked against the world (server
+    /// mods).
+    Multiblocks,
 }
 impl Capability {
-    pub const ALL: [Capability; 18] = [
+    pub const ALL: [Capability; 19] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -139,6 +143,7 @@ impl Capability {
         Capability::Displays,
         Capability::Items,
         Capability::MachineRecipes,
+        Capability::Multiblocks,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -153,6 +158,7 @@ impl Capability {
                 | Capability::Displays
                 | Capability::Items
                 | Capability::MachineRecipes
+                | Capability::Multiblocks
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -176,6 +182,7 @@ impl Capability {
             Capability::Displays => "displays",
             Capability::Items => "items",
             Capability::MachineRecipes => "machine-recipes",
+            Capability::Multiblocks => "multiblocks",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -193,6 +200,7 @@ impl Capability {
                 | Capability::Displays
                 | Capability::Items
                 | Capability::MachineRecipes
+                | Capability::Multiblocks
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -224,6 +232,9 @@ impl Capability {
             Capability::Displays => "show block models and text of its own in the world",
             Capability::Items => "keep items in its blocks and move items between any mod's blocks",
             Capability::MachineRecipes => "read the recipes of its own machines from data files",
+            Capability::Multiblocks => {
+                "keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -271,6 +282,7 @@ impl fmt::Display for Capability {
             Capability::Displays => "displays",
             Capability::Items => "items",
             Capability::MachineRecipes => "machine-recipes",
+            Capability::Multiblocks => "multiblocks",
         };
         f.write_str(name)
     }
@@ -314,6 +326,18 @@ impl Manifest {
         {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
+        }
+        // A multiblock structure is anchored on one of the mod's block
+        // entities and checked against the world's blocks: both must be
+        // asked for beside it (the world read is the player's to see).
+        if m.capabilities.contains(&Capability::Multiblocks)
+            && [Capability::BlockEntities, Capability::World]
+                .into_iter()
+                .any(|c| !m.capabilities.contains(&c))
+        {
+            return Err(format!(
+                "{MANIFEST}: capability multiblocks needs capabilities block-entities and world"
+            ));
         }
         if let Some(c) = m
             .capabilities
@@ -600,6 +624,45 @@ capabilities = ["game-read", "hud"]
         assert_eq!(p.manifest.id, "coords_hud");
         assert_eq!(p.wasm.as_deref(), Some(&b"\0asm"[..]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn multiblocks_need_their_anchor_and_the_world() {
+        let base = "id = \"m\"
+name = \"M\"
+version = \"1\"
+api = \"0.3\"
+side = \"server\"
+";
+        let parse = |caps: &str, extra: &str| {
+            Manifest::parse(&format!(
+                "{base}capabilities = [{caps}]
+{extra}"
+            ))
+        };
+        let both = parse(
+            "\"block-entities\", \"world\", \"multiblocks\"",
+            "experimental = [\"block-entities\", \"multiblocks\"]
+",
+        )
+        .unwrap();
+        assert!(both.capabilities.contains(&Capability::Multiblocks));
+        for caps in [
+            "\"multiblocks\"",
+            "\"world\", \"multiblocks\"",
+            "\"block-entities\", \"multiblocks\"",
+        ] {
+            let e = parse(
+                caps,
+                "experimental = [\"multiblocks\"]
+",
+            )
+            .unwrap_err();
+            assert!(
+                e.contains("multiblocks needs capabilities block-entities and world"),
+                "{e}"
+            );
+        }
     }
 
     #[test]

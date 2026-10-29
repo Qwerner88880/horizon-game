@@ -13,11 +13,14 @@
 //! right one, which players can only take from. A cobblestone or andesite
 //! in the left slot is ground into redstone by the mod's own machine
 //! recipes (capability `machine-recipes`, `data/cells/recipe/`), which the
-//! game loads before the mod starts; `/cellrecipes` counts them.
+//! game loads before the mod starts; `/cellrecipes` counts them. Its
+//! energy core is a multiblock (capability `multiblocks`,
+//! `data/cells/multiblock/`): a ring of iron around the cell, which
+//! `/cellcore` says is whole or names the first block it needs.
 use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, MenuItem, MenuSlot, Player, Registration, ServerMod, Shape,
     SlotMode, Stack, Transform, UsedBlock, block_entities, displays, energy, items,
-    machine_recipes, menus, players,
+    machine_recipes, menus, multiblocks, players,
 };
 use std::collections::BTreeMap;
 
@@ -36,10 +39,16 @@ struct Cells {
     /// The mod's grinding recipes, read once in `init` (capability
     /// `machine-recipes`): they never change while the mod runs.
     recipes: Vec<machine_recipes::MachineRecipe>,
+    /// The mod's structures, read once in `init` (capability
+    /// `multiblocks`): they never change while the mod runs either.
+    structures: Vec<multiblocks::Structure>,
 }
 
 /// The machine recipe kind this mod's files carry (`data/cells/recipe/`).
 const KIND: &str = "cells:grinding";
+/// The energy core's structure (`data/cells/multiblock/core.json`): a ring
+/// of iron around the cell, hollow, with the cell itself as the anchor.
+const CORE_ID: &str = "cells:core";
 
 /// The menu's buttons, by slot (3 rows of 9).
 const DRAIN: u32 = 11;
@@ -155,6 +164,26 @@ fn stored(dimension: &str, x: i32, y: i32, z: i32) -> u64 {
     energy::get(dimension, x, y, z).map_or(0, |s| s.stored)
 }
 
+/// What the core around a cell is made of: whole (`Ok(None)`), or the
+/// first block it needs and what is there instead, tried at every quarter
+/// turn — a core built turned is whole too.
+fn core_need(dimension: &str, x: i32, y: i32, z: i32) -> Result<Option<String>, String> {
+    let mut first = None;
+    for quarter in 0..4u32 {
+        match multiblocks::check(dimension, x, y, z, quarter, CORE_ID) {
+            Ok(None) => return Ok(None),
+            Ok(Some(mismatches)) => first = first.or_else(|| mismatches.first().cloned()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(first.map(|m| {
+        format!(
+            "needs {} at {} {} {} ({} there)",
+            m.expected, m.x, m.y, m.z, m.found
+        )
+    }))
+}
+
 /// One tick of every cell: each charges, then each pair side by side
 /// moves energy from the fuller toward the emptier, up to [`FLOW`]. Takes
 /// and gives back energies by position.
@@ -186,15 +215,18 @@ impl ServerMod for Cells {
         // The game loads the mod's machine recipes before `init`
         // (docs/mods.md): read them once here and keep them, not each tick.
         let recipes = machine_recipes::all(&[KIND.to_string()]);
+        let structures = multiblocks::all();
         Ok((
             Cells {
                 recipes,
+                structures,
                 ..Cells::default()
             },
             Registration::new()
                 .command_with("cell", [Argument::block_pos("pos").optional()])
                 .command_with("cellgui", [Argument::block_pos("pos").optional()])
                 .command_with("cellitems", [Argument::block_pos("pos").optional()])
+                .command_with("cellcore", [Argument::block_pos("pos").optional()])
                 .command_with("cellrecipes", []),
         ))
     }
@@ -332,6 +364,18 @@ impl ServerMod for Cells {
     ) -> Result<Option<String>, String> {
         if name == "cellrecipes" {
             return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
+        }
+        if name == "cellcore" {
+            let (x, y, z) = target(player, args);
+            let d = &player.dimension;
+            block_entities::get(d, x, y, z).ok_or("No cell there")?;
+            if !self.structures.iter().any(|s| s.id == CORE_ID) {
+                return Err("The mod carries no core structure".into());
+            }
+            return match core_need(d, x, y, z)? {
+                None => Ok(Some(format!("The core at {x} {y} {z} is whole"))),
+                Some(need) => Ok(Some(need)),
+            };
         }
         let (x, y, z) = target(player, args);
         let d = &player.dimension;

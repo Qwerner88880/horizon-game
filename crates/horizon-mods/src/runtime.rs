@@ -175,6 +175,17 @@ mod machine_recipe_bindings {
     });
 }
 use machine_recipe_bindings::horizon::mods::machine_recipes;
+/// Capability `multiblocks`' imports (docs/mods.md): the mods' own
+/// structure templates, a table built before they start.
+mod multiblock_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "multiblock-host",
+        additional_derives: [PartialEq],
+    });
+}
+use multiblock_bindings::horizon::mods::multiblocks;
+pub use multiblock_bindings::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -389,6 +400,9 @@ type EntitySlot = Arc<Mutex<Option<crate::BlockEntities>>>;
 /// state — filled once by [`Mods::load_for`] before any mod starts, and
 /// every mod's `init` already reads it.
 type RecipeSlot = Arc<Mutex<Option<Arc<crate::machine_recipes::MachineRecipes>>>>;
+/// Capability `multiblocks`' table of structure templates, as
+/// [`RecipeSlot`] is for recipes.
+type TemplateSlot = Arc<Mutex<Option<Arc<crate::multiblocks::Templates>>>>;
 
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
@@ -561,6 +575,7 @@ struct State {
     world: WorldSlot,
     entities: EntitySlot,
     machine_recipes: RecipeSlot,
+    multiblocks: TemplateSlot,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -574,6 +589,7 @@ pub struct Mods {
     world: WorldSlot,
     entities: EntitySlot,
     machine_recipes: RecipeSlot,
+    multiblocks: TemplateSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -591,9 +607,10 @@ impl Mods {
         self.entries.iter().any(|e| {
             e.status == Status::Running
                 && (e.run.as_ref().is_some_and(|r| r.blocks.is_some())
-                    || e.manifest
-                        .as_ref()
-                        .is_some_and(|m| m.capabilities.contains(&crate::Capability::World)))
+                    || e.manifest.as_ref().is_some_and(|m| {
+                        m.capabilities.contains(&crate::Capability::World)
+                            || m.capabilities.contains(&crate::Capability::Multiblocks)
+                    }))
         })
     }
     /// `state` was placed at `pos`: each running mod claiming its block gets
@@ -841,25 +858,34 @@ impl Mods {
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
-        Mods::load_for(Runs::Both, paths, enabled, reserved, None)
+        Mods::load_for(Runs::Both, paths, enabled, reserved, None, None)
     }
     /// [`Mods::load`], starting only the mods `runs` says this game runs; the
     /// others that are on are [`Status::Elsewhere`]. `recipes` is capability
     /// `machine-recipes`' table, built by the game before this call so that
     /// every mod's `init` already reads it (`None`: the mods' machines have
-    /// no recipes, and `machine-recipes.all` answers empty).
+    /// no recipes, and `machine-recipes.all` answers empty); `multiblocks`
+    /// is capability `multiblocks`' table of structure templates, built the
+    /// same way (`None`: no structures, and `multiblocks.all` answers
+    /// empty).
     pub fn load_for(
         runs: Runs,
         paths: &[PathBuf],
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
         recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
+        multiblocks: Option<Arc<crate::multiblocks::Templates>>,
     ) -> Mods {
         let mut mods = Mods::default();
         if let Some(recipes) = recipes
             && let Ok(mut slot) = mods.machine_recipes.lock()
         {
             *slot = Some(recipes);
+        }
+        if let Some(multiblocks) = multiblocks
+            && let Ok(mut slot) = mods.multiblocks.lock()
+        {
+            *slot = Some(multiblocks);
         }
         for path in paths {
             let modified = modified(path);
@@ -927,6 +953,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             machine_recipes::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            multiblocks::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -968,6 +996,7 @@ impl Mods {
         let world = self.world.clone();
         let entities = self.entities.clone();
         let machine_recipes = self.machine_recipes.clone();
+        let multiblocks = self.multiblocks.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -1011,6 +1040,7 @@ impl Mods {
             world,
             entities,
             machine_recipes,
+            multiblocks,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -2212,7 +2242,7 @@ impl State {
             .map_err(|_| "block entities are unavailable".to_string())?;
         let store = slot
             .as_mut()
-            .ok_or("energy is kept only during server hooks")?;
+            .ok_or("the server's stores are kept only during server hooks")?;
         Ok(f(store, &self.id))
     }
 }
@@ -2472,6 +2502,83 @@ fn wit_recipe(r: crate::machine_recipes::MachineRecipe) -> machine_recipes::Mach
         inputs: slots(r.inputs),
         results: slots(r.results),
         data: r.data,
+    }
+}
+
+impl multiblocks::Host for State {
+    fn all(&mut self) -> Vec<Structure> {
+        self.template_table()
+            .map_or_else(Vec::new, |t| t.of_mod(&self.id).to_vec())
+            .into_iter()
+            .map(wit_structure)
+            .collect()
+    }
+    fn check(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        quarter: u32,
+        id: String,
+    ) -> Result<Option<Vec<Mismatch>>, String> {
+        let no_such = || format!("no structure {id} of this mod");
+        let table = self.template_table();
+        let structure = table
+            .as_deref()
+            .and_then(|t| t.of_mod(&self.id).iter().find(|s| s.id == id))
+            .ok_or_else(no_such)?;
+        // A read of the server's world: it answers during the server's hooks.
+        let world = self
+            .world
+            .lock()
+            .map_err(|_| "the world is unavailable".to_string())?;
+        let view = world
+            .as_ref()
+            .ok_or("the world is kept only during server hooks")?;
+        crate::multiblocks::check_cells(structure, [x, y, z], quarter, &|bx, by, bz| {
+            view.block(&dimension, bx, by, bz)
+        })
+        .map(|mismatches| mismatches.map(|list| list.into_iter().map(wit_mismatch).collect()))
+    }
+}
+impl State {
+    /// The multiblocks table this run loaded, if the game gave it one.
+    fn template_table(&self) -> Option<Arc<crate::multiblocks::Templates>> {
+        self.multiblocks.lock().ok().and_then(|s| s.clone())
+    }
+}
+
+/// A stored structure as the component reads it.
+fn wit_structure(s: crate::multiblocks::Structure) -> Structure {
+    Structure {
+        id: s.id,
+        width: s.width,
+        height: s.height,
+        depth: s.depth,
+        anchor: (s.anchor[0], s.anchor[1], s.anchor[2]),
+        cells: s
+            .cells
+            .into_iter()
+            .map(|c| Cell {
+                dx: c.dx,
+                dy: c.dy,
+                dz: c.dz,
+                blocks: c.blocks,
+            })
+            .collect(),
+        data: s.data,
+    }
+}
+
+/// A stored mismatch as the component reads it.
+fn wit_mismatch(m: crate::multiblocks::Mismatch) -> Mismatch {
+    Mismatch {
+        x: m.x,
+        y: m.y,
+        z: m.z,
+        expected: m.expected,
+        found: m.found,
     }
 }
 

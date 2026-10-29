@@ -334,7 +334,10 @@ impl Game<'_> {
             self.res.rest.get().map(|r| &r.items),
             runs,
         );
-        let mods = Mods::load_for(runs, &paths, on, vanilla_command, recipes);
+        // The server mods' structures, before any of them starts: each
+        // mod's `init` already reads its templates (docs/mods.md).
+        let multiblocks = super::multiblocks::multiblocks(&paths, &self.options.resources, runs);
+        let mods = Mods::load_for(runs, &paths, on, vanilla_command, recipes, multiblocks);
         self.mods.mods = mods;
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));

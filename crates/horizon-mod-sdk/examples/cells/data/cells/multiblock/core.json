@@ -1,0 +1,5 @@
+{
+  "anchor": [1, 1, 1],
+  "palette": { "#": "minecraft:iron_block", "C": "minecraft:lodestone", ".": "air" },
+  "layers": [ ["###", "#.#", "###"], ["###", "#C#", "###"], ["###", "#.#", "###"] ]
+}

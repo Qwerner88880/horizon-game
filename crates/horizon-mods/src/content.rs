@@ -265,16 +265,20 @@ impl Content {
     fn check(&mut self, manifest: &Manifest) -> Result<(), String> {
         let id = manifest.id.as_str();
         if !self.files.is_empty() && !manifest.capabilities.contains(&Capability::Registries) {
-            // The one exception (docs/mods.md, "Machine recipes"): a server
-            // mod with capability `machine-recipes` carries its machines'
-            // recipes, and nothing else besides them.
-            let recipes = manifest.side == Side::Server
-                && manifest.capabilities.contains(&Capability::MachineRecipes)
-                && self
-                    .files
-                    .iter()
-                    .all(|f| f.starts_with(&format!("data/{id}/recipe/")) && f.ends_with(".json"));
-            if !recipes {
+            // The exceptions (docs/mods.md, "Machine recipes" and
+            // "Multiblocks"): a server mod with capability `machine-recipes`
+            // carries its machines' recipes, one with `multiblocks` its
+            // structure templates, and nothing else besides them.
+            let server = manifest.side == Side::Server;
+            let recipes = server && manifest.capabilities.contains(&Capability::MachineRecipes);
+            let structures = server && manifest.capabilities.contains(&Capability::Multiblocks);
+            let allowed = |f: &str| {
+                (recipes && f.starts_with(&format!("data/{id}/recipe/")) && f.ends_with(".json"))
+                    || (structures
+                        && f.starts_with(&format!("data/{id}/multiblock/"))
+                        && f.ends_with(".json"))
+            };
+            if !self.files.iter().all(|f| allowed(f)) {
                 return Err(format!(
                     "has assets/ or data/ but not capability registries in {MANIFEST}"
                 ));
@@ -533,6 +537,52 @@ capabilities = ["registries"]
             "data/m/recipe/readme.txt",
         ] {
             let files: Vec<(&str, &[u8])> = vec![("data/m/recipe/a.json", b"{}"), (extra, b"x")];
+            let e = read(&files).unwrap_err();
+            assert!(e.contains("not capability registries"), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_server_mod_carries_only_its_structures() {
+        let manifest = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+             capabilities = [\"block-entities\", \"world\", \"multiblocks\"]\n\
+             experimental = [\"block-entities\", \"multiblocks\"]\n";
+        let read = |files: &[(&str, &[u8])]| {
+            let dir = scratch("multiblocks");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(manifest, Some(b"\0asm"), files).unwrap(),
+            )
+            .unwrap();
+            let out = Package::read(&path).and_then(|p| Content::read(&path, &p.manifest));
+            std::fs::remove_dir_all(&dir).unwrap();
+            out
+        };
+        let structures: &[(&str, &[u8])] = &[
+            ("data/m/multiblock/core.json", b"{}"),
+            ("data/m/multiblock/tier/deep/core.json", b"{}"),
+        ];
+        let content = read(structures).unwrap();
+        assert_eq!(
+            content.files,
+            [
+                "data/m/multiblock/core.json",
+                "data/m/multiblock/tier/deep/core.json"
+            ]
+        );
+        // Anything else under assets/ or data/ is still refused — recipes
+        // too, without capability `machine-recipes` — as is any structure
+        // of another namespace.
+        for extra in [
+            "assets/m/textures/a.png",
+            "data/m/horizon/block/a.json",
+            "data/m/recipe/a.json",
+            "data/other/multiblock/a.json",
+            "data/m/multiblock/readme.txt",
+        ] {
+            let files: Vec<(&str, &[u8])> =
+                vec![("data/m/multiblock/a.json", b"{}"), (extra, b"x")];
             let e = read(&files).unwrap_err();
             assert!(e.contains("not capability registries"), "{extra}: {e}");
         }
