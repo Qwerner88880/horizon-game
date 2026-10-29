@@ -804,6 +804,9 @@ impl Game<'_> {
                 | Output::SetEntityHealth { .. }
                 | Output::RemoveEntity { .. }
                 | Output::RedstoneOutput { .. }
+                | Output::Particle { .. }
+                | Output::Sound { .. }
+                | Output::SoundTo { .. }
                 | Output::SetMenuItems { .. }
                 | Output::CloseMenu { .. }
                 | Output::ShowDisplay { .. }

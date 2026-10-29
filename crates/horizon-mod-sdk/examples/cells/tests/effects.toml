@@ -1,0 +1,43 @@
+# Capability effects: /cellfx puffs dust above the cell and plays a chime
+# that rises in pitch with the cell's gauge (a level for each 1000 FE).
+
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+# Gauge 0: red dust, the lowest pitch.
+[[step]]
+ticks = 1
+command = "cellfx"
+expect.feedback = "Cell at 0 63 0: gauge 0"
+expect.effects = [
+  "particle minecraft:dust x20 @ 0.5 64.2 0.5",
+  "sound minecraft:block.note_block.chime 1 0.5 block @ 0.5 63.5 0.5",
+]
+
+# Fill puts 1000 FE in: gauge 1, a little higher.
+[[step]]
+command = "cellgui"
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+
+[[step]]
+ticks = 1
+command = "cellfx"
+expect.feedback = "Cell at 0 63 0: gauge 1"
+expect.effects = [
+  "particle minecraft:dust x20 @ 0.5 64.2 0.5",
+  "sound minecraft:block.note_block.chime 1 0.6 block @ 0.5 63.5 0.5",
+]
+
+# Nothing is sent while nothing is asked for.
+[[step]]
+ticks = 5
+expect.effects = []
+
+# No cell, no effects.
+[[step]]
+command = "cellfx 5 63 5"
+expect.error = "No cell there"
+expect.effects = []

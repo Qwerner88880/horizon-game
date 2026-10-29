@@ -1476,6 +1476,65 @@ interface entity-events {
     used: func(player: player, entity: entity);
 }
 
+/// Capability `effects`, server mods only (manifest `api = "0.3"`,
+/// experimental): particles and sounds in the world the server simulates,
+/// sent to the players near them (particles within 32 blocks, a sound as far
+/// as its volume carries: 16 blocks a unit of volume, at least 16). Players
+/// on a Horizon client or a vanilla one both get them. Names are the game's:
+/// `minecraft:flame`, `minecraft:block.anvil.land`; a sound the game does
+/// not know is sent by name and played when the player's resource pack has
+/// it. A mod sends at most 128 effects a call.
+interface effects {
+    record particle {
+        /// `minecraft:flame`, `minecraft:happy_villager`, `minecraft:dust`:
+        /// any particle the game has. One that needs more than a name takes
+        /// it from the fields below: `color` and `scale` for `dust`,
+        /// `entity_effect`, `effect`, `instant_effect` and `tinted_leaves`;
+        /// `block` for `block`, `block_marker`, `falling_dust`,
+        /// `dust_pillar` and `block_crumble`. Items, trails and vibrations
+        /// are not sent.
+        name: string,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// How far from the point they scatter on each axis (0 to 64), and
+        /// the speed they move at (0 to 10): `count` of them, each with a
+        /// gaussian spread. With a `count` of 0 one particle is sent, and it
+        /// moves by speed times spread.
+        spread-x: f32,
+        spread-y: f32,
+        spread-z: f32,
+        speed: f32,
+        /// How many, up to 500.
+        count: u32,
+        /// 0xRRGGBB.
+        color: option<u32>,
+        /// A dust's size, 0.01 to 4 (1 by default).
+        scale: option<f32>,
+        /// A block state, `minecraft:stone` or `minecraft:oak_log[axis=y]`.
+        block: option<string>,
+        /// Drawn from any distance and whatever the player's particle
+        /// setting says.
+        always-show: bool,
+    }
+    /// Sends a particle in `dimension` (the one the server is simulating:
+    /// other dimensions are dropped). An error for a name that is not
+    /// `namespace:path`, values out of range, or past 128 effects a call; a
+    /// particle the game does not know, or one missing the fields it needs,
+    /// is dropped and logged.
+    spawn-particle: func(dimension: string, particle: particle) -> result<_, string>;
+    /// Plays a sound at a position in `dimension`. `volume` is 0 to 10
+    /// (carrying 16 blocks a unit), `pitch` 0.5 to 2, `category` one of
+    /// `master`, `music`, `record`, `weather`, `block`, `hostile`,
+    /// `neutral`, `player`, `ambient`, `voice`: the volume slider the player
+    /// hears it on. An error for a bad name or category, or past 128 effects
+    /// a call.
+    play-sound: func(dimension: string, sound: string, x: f64, y: f64, z: f64, volume: f32, pitch: f32, category: string) -> result<_, string>;
+    /// Plays a sound for one player, at their position (a cue, not a place
+    /// in the world). Nothing for a player who is not on the server.
+    play-sound-to: func(player: string, sound: string, volume: f32, pitch: f32, category: string) -> result<_, string>;
+}
+
 /// Capability `redstone`, server mods only (manifest `api = "0.3"`,
 /// experimental): redstone for the mod's own block entities. The game reads
 /// the signals on each face of every block the mod claims, every tick, and
@@ -1549,6 +1608,7 @@ world horizon-block-mod {
     import network;
     import entities;
     import redstone;
+    import effects;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -1573,6 +1633,11 @@ world block-entity-host {
 world use-host {
     import players;
     export block-use-events;
+}
+
+/// The game's side of capability `effects` (imports only).
+world effects-host {
+    import effects;
 }
 
 /// The game's side of capability `displays` (imports only).

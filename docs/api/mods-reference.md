@@ -32,6 +32,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `entities` | [`entities`](#entities) | spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die |
 | `fluids` | [`fluids`](#fluids) | store fluids in its blocks and move fluids between any mod's blocks |
 | `redstone` | [`redstone`](#redstone) | read the redstone signals around its blocks and give redstone signals out of them |
+| `effects` | [`effects`](#effects) | show particles and play sounds in the world for the players near them |
 
 ## World `horizon-mod`
 
@@ -51,7 +52,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `server-events`
 
 ## World `block-entity-host`
@@ -67,6 +68,13 @@ The game's side of `block-use-events`: a world of its own, so server mods built 
 
 - Imports (what the game offers): `players`
 - Exports (what the mod provides): `block-use-events`
+
+## World `effects-host`
+
+The game's side of capability `effects` (imports only).
+
+- Imports (what the game offers): `effects`
+- Exports (what the mod provides): 
 
 ## World `display-host`
 
@@ -1385,6 +1393,36 @@ What the server calls in a server mod with capability `entities`. A server mod b
 | `died` | `func(entity: entity)` | A mob of the mod died, whatever killed it: told once, as it starts to fall; its loot drops as vanilla's. |
 | `removed` | `func(entity: entity)` | A mob of the mod is gone: after its death, removed, or despawned. Its last state. |
 | `used` | `func(player: player, entity: entity)` | A player right-clicked a mob of the mod that takes the use. |
+
+## `effects`
+
+Access: capability `effects`.
+
+Capability `effects`, server mods only (manifest `api = "0.3"`, experimental): particles and sounds in the world the server simulates, sent to the players near them (particles within 32 blocks, a sound as far as its volume carries: 16 blocks a unit of volume, at least 16). Players on a Horizon client or a vanilla one both get them. Names are the game's: `minecraft:flame`, `minecraft:block.anvil.land`; a sound the game does not know is sent by name and played when the player's resource pack has it. A mod sends at most 128 effects a call.
+
+### record `particle`
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` | `minecraft:flame`, `minecraft:happy_villager`, `minecraft:dust`: any particle the game has. One that needs more than a name takes it from the fields below: `color` and `scale` for `dust`, `entity_effect`, `effect`, `instant_effect` and `tinted_leaves`; `block` for `block`, `block_marker`, `falling_dust`, `dust_pillar` and `block_crumble`. Items, trails and vibrations are not sent. |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `spread-x` | `f32` | How far from the point they scatter on each axis (0 to 64), and the speed they move at (0 to 10): `count` of them, each with a gaussian spread. With a `count` of 0 one particle is sent, and it moves by speed times spread. |
+| `spread-y` | `f32` |  |
+| `spread-z` | `f32` |  |
+| `speed` | `f32` |  |
+| `count` | `u32` | How many, up to 500. |
+| `color` | `option<u32>` | 0xRRGGBB. |
+| `scale` | `option<f32>` | A dust's size, 0.01 to 4 (1 by default). |
+| `block` | `option<string>` | A block state, `minecraft:stone` or `minecraft:oak_log[axis=y]`. |
+| `always-show` | `bool` | Drawn from any distance and whatever the player's particle setting says. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `spawn-particle` | `func(dimension: string, particle: particle) -> result<_, string>` | Sends a particle in `dimension` (the one the server is simulating: other dimensions are dropped). An error for a name that is not `namespace:path`, values out of range, or past 128 effects a call; a particle the game does not know, or one missing the fields it needs, is dropped and logged. |
+| `play-sound` | `func(dimension: string, sound: string, x: f64, y: f64, z: f64, volume: f32, pitch: f32, category: string) -> result<_, string>` | Plays a sound at a position in `dimension`. `volume` is 0 to 10 (carrying 16 blocks a unit), `pitch` 0.5 to 2, `category` one of `master`, `music`, `record`, `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`, `voice`: the volume slider the player hears it on. An error for a bad name or category, or past 128 effects a call. |
+| `play-sound-to` | `func(player: string, sound: string, volume: f32, pitch: f32, category: string) -> result<_, string>` | Plays a sound for one player, at their position (a cue, not a place in the world). Nothing for a player who is not on the server. |
 
 ## `redstone`
 

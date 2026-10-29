@@ -1812,6 +1812,76 @@ mod run {
             }
         }
 
+        /// A sound name as the game writes it: `minecraft:` unless it has a
+        /// namespace.
+        fn sound_name(name: &str) -> String {
+            if name.contains(':') {
+                name.to_owned()
+            } else {
+                format!("minecraft:{name}")
+            }
+        }
+
+        /// The packet for a particle a mod sent (capability `effects`), or
+        /// None (logged) for one the game can't make: an unknown type, one
+        /// that needs data the mod can't give, or a block state that does not
+        /// exist.
+        fn mod_particle_packet(
+            registry: &horizon_world::registry::BlockRegistry,
+            host: &LanHost,
+            p: &horizon_mods::EffectParticle,
+        ) -> Option<horizon_protocol::packets::play::Clientbound> {
+            use horizon_client::particles::{ParticleOptions, ParticleType};
+            use horizon_protocol::packets::play::{self, Clientbound as C};
+            let name = p.name.strip_prefix("minecraft:").unwrap_or(&p.name);
+            // `flash` takes data the network form here does not carry.
+            let ty = ParticleType::from_name(name).filter(|_| name != "flash");
+            let Some(ty) = ty else {
+                log::warn!(
+                    "Horizon: a mod sent particle {}, which is not one it can",
+                    p.name
+                );
+                return None;
+            };
+            let rgb = |c: u32| {
+                [
+                    ((c >> 16) & 255) as f32 / 255.0,
+                    ((c >> 8) & 255) as f32 / 255.0,
+                    (c & 255) as f32 / 255.0,
+                ]
+            };
+            let mut options = ParticleOptions::simple(ty);
+            if let Some(c) = p.color {
+                let [r, g, b] = rgb(c);
+                options.color = [r, g, b, 1.0];
+                options.to_color = [r, g, b];
+            }
+            if let Some(s) = p.scale {
+                options.scale = s;
+            }
+            let state = p
+                .block
+                .as_deref()
+                .and_then(|text| super::super::render_control::parse_state(registry, text).ok());
+            let Some(particle) = Self::hub_particle(&host.hub, &options, state) else {
+                log::warn!(
+                    "Horizon: a mod sent particle {} without what it needs (a block, a colour)",
+                    p.name
+                );
+                return None;
+            };
+            Some(C::LevelParticles(play::LevelParticles {
+                particle,
+                override_limiter: p.always_show,
+                always_show: p.always_show,
+                pos: p.pos,
+                dist: p.spread,
+                max_speed: [p.speed; 3],
+                count: p.count as i32,
+                randomization: 0,
+            }))
+        }
+
         /// A mod's block now gives out `power` (capability `redstone`): the
         /// blocks around it update, as they do for a lever, and for those it
         /// powers through when the signal is strong.
@@ -2216,6 +2286,79 @@ mod run {
                         let line = named(&name, text.clone());
                         self.tell_server_player(host.as_deref_mut(), &p.id, line);
                     }
+                }
+                Output::Particle {
+                    dimension,
+                    particle,
+                } => {
+                    if dimension != self.dim.id() {
+                        return;
+                    }
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    if let Some(packet) =
+                        Self::mod_particle_packet(self.pack.assets.registry, host, &particle)
+                    {
+                        let at = particle.pos;
+                        // The players whose block is within 32 blocks (a
+                        // particle that is always shown, within 512).
+                        let reach = if particle.always_show { 512.0 } else { 32.0 };
+                        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+                            let d: f64 = (0..3)
+                                .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
+                                .sum();
+                            if d < reach * reach {
+                                g.send(&packet);
+                            }
+                        }
+                    }
+                }
+                Output::Sound {
+                    dimension,
+                    name,
+                    pos,
+                    volume,
+                    pitch,
+                    category,
+                } => {
+                    if dimension != self.dim.id() {
+                        return;
+                    }
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    host.hub
+                        .sound(&Self::sound_name(&name), pos, volume, pitch, category, None);
+                }
+                Output::SoundTo {
+                    player,
+                    name,
+                    volume,
+                    pitch,
+                    category,
+                } => {
+                    let Some(host) = host.or(self.lan.as_mut()) else {
+                        return;
+                    };
+                    let Some((conn, at)) = host
+                        .hub
+                        .guests
+                        .iter()
+                        .find(|g| g.placed && uuid_string(g.uuid) == player)
+                        .map(|g| (g.conn, g.position))
+                    else {
+                        return;
+                    };
+                    let packet = host.hub.sound_packet(
+                        &Self::sound_name(&name),
+                        at,
+                        volume,
+                        pitch,
+                        category,
+                        self.ticks as i64,
+                    );
+                    host.hub.send_to(conn, &packet);
                 }
                 Output::NetToClient {
                     mod_id,

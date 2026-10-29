@@ -1159,6 +1159,12 @@ pub struct Expect {
     /// The mod's screen after the step, as [`TestGame::screen_lines`]
     /// shows it; `[]` for no screen open.
     screen: Option<Vec<String>>,
+    /// The particles and sounds the mods sent during the step (capability
+    /// `effects`), in order: `particle minecraft:flame x10 @ 0.5 65.0 0.5`
+    /// (name, count, place), `sound minecraft:block.anvil.land 1 1.5 block @
+    /// 0.5 64.0 0.5` (name, volume, pitch, category, place) and `sound-to
+    /// Alex minecraft:entity.player.levelup 1 1 player`.
+    effects: Option<Vec<String>>,
     /// What the mods' blocks give out after the step (capability
     /// `redstone`), as `x y z down up north south west east`, with ` strong`
     /// after it for a strong signal, ordered by place.
@@ -1590,6 +1596,52 @@ impl Step {
                 })
                 .collect();
             same("net", want, &got)?;
+        }
+        if let Some(want) = &e.effects {
+            const CATEGORIES: [&str; 10] = [
+                "master", "music", "record", "weather", "block", "hostile", "neutral", "player",
+                "ambient", "voice",
+            ];
+            let category = |c: i32| CATEGORIES.get(c as usize).copied().unwrap_or("?");
+            let got: Vec<String> = out
+                .iter()
+                .filter_map(|o| match o {
+                    Output::Particle { particle: p, .. } => Some(format!(
+                        "particle {} x{} @ {:.1} {:.1} {:.1}",
+                        p.name, p.count, p.pos[0], p.pos[1], p.pos[2]
+                    )),
+                    Output::Sound {
+                        name,
+                        pos,
+                        volume,
+                        pitch,
+                        category: c,
+                        ..
+                    } => Some(format!(
+                        "sound {name} {volume} {pitch} {} @ {:.1} {:.1} {:.1}",
+                        category(*c),
+                        pos[0],
+                        pos[1],
+                        pos[2]
+                    )),
+                    Output::SoundTo {
+                        player,
+                        name,
+                        volume,
+                        pitch,
+                        category: c,
+                    } => {
+                        let who = game.players.iter().find(|p| p.id == *player);
+                        let who = who.map_or(player.clone(), |p| p.name.clone());
+                        Some(format!(
+                            "sound-to {who} {name} {volume} {pitch} {}",
+                            category(*c)
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect();
+            same("effects", want, &got)?;
         }
         if let Some(want) = &e.redstone {
             let got: Vec<String> = game

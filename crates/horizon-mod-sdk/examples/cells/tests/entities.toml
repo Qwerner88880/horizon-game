@@ -35,6 +35,10 @@ expect.entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=0 dying"]
 [[step]]
 ticks = 1
 expect.broadcast = ["A sentinel fell at 2 64 0"]
+expect.effects = [
+  "particle minecraft:large_smoke x20 @ 2.5 64.0 0.5",
+  "sound minecraft:entity.iron_golem.death 1 1 neutral @ 2.5 64.0 0.5",
+]
 
 [[step]]
 ticks = 1

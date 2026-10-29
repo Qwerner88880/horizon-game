@@ -139,9 +139,11 @@ pub enum Capability {
     /// Redstone for the mod's own blocks: read the signals around them, give
     /// signals out (server mods).
     Redstone,
+    /// Particles and sounds in the world, for the players near (server mods).
+    Effects,
 }
 impl Capability {
-    pub const ALL: [Capability; 25] = [
+    pub const ALL: [Capability; 26] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -167,6 +169,7 @@ impl Capability {
         Capability::Entities,
         Capability::Fluids,
         Capability::Redstone,
+        Capability::Effects,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's.
@@ -193,6 +196,7 @@ impl Capability {
                 | Capability::Entities
                 | Capability::Fluids
                 | Capability::Redstone
+                | Capability::Effects
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -223,6 +227,7 @@ impl Capability {
             Capability::Entities => "entities",
             Capability::Fluids => "fluids",
             Capability::Redstone => "redstone",
+            Capability::Effects => "effects",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -247,6 +252,7 @@ impl Capability {
                 | Capability::Entities
                 | Capability::Fluids
                 | Capability::Redstone
+                | Capability::Effects
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -287,6 +293,9 @@ impl Capability {
             }
             Capability::Network => {
                 "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::Effects => {
+                "show particles and play sounds in the world for the players near them"
             }
             Capability::Redstone => {
                 "read the redstone signals around its blocks and give redstone signals out of them"
@@ -351,6 +360,7 @@ impl fmt::Display for Capability {
             Capability::Entities => "entities",
             Capability::Fluids => "fluids",
             Capability::Redstone => "redstone",
+            Capability::Effects => "effects",
         };
         f.write_str(name)
     }

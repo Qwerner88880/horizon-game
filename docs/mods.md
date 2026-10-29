@@ -685,6 +685,61 @@ vanilla pipes or hoppers seeing the tanks, fluids placed in the world as
 blocks of the mod's own fluid (a content mod can't declare a fluid yet), and
 showing a tank in a menu as a gauge.
 
+#### Particles and sounds (capability `effects`, experimental)
+
+A server mod shows particles and plays sounds in the world, for the players
+near them. They are the game's own packets, so Horizon and vanilla clients
+both get them, and in single player the window gets them as a guest of its
+own server does.
+
+```rust
+use horizon_mod_sdk::server::{Particle, effects};
+
+effects::spawn_particle(
+    "minecraft:overworld",
+    &Particle::new("minecraft:dust", x, y + 1.2, z, 20)
+        .spread(0.3, 0.3, 0.3)
+        .color(0x55FF55)
+        .scale(1.0),
+)?;
+effects::play_sound("minecraft:overworld", "minecraft:block.note_block.chime",
+    x, y, z, 1.0, 1.4, "block")?;
+effects::play_sound_to(&player.id, "minecraft:entity.player.levelup", 1.0, 1.0, "player")?;
+```
+
+- **Particles.** `spawn_particle(dimension, particle)`: a name (`minecraft:flame`,
+  `minecraft:happy_villager`, any particle the game has), a point, how far
+  they scatter on each axis (0 to 64) and how fast they move (0 to 10), and
+  how many (up to 500; with 0 one is sent that moves by speed times spread).
+  The particles that need more take it from `color` (0xRRGGBB) and `scale`
+  (0.01 to 4): `dust`, `dust_color_transition` (the colour twice),
+  `entity_effect`, `effect`, `instant_effect`, `tinted_leaves`; or from `block`
+  (`minecraft:oak_log[axis=y]`): `block`, `block_marker`, `falling_dust`,
+  `dust_pillar`, `block_crumble`. Players within 32 blocks get it
+  (`always_show`: within 512, whatever their particle setting says).
+  Items, trails, vibrations and flashes are not sent. A particle the game does
+  not know, or one missing its colour or block, is dropped and logged.
+- **Sounds.** `play_sound(dimension, sound, x, y, z, volume, pitch, category)`
+  plays in the world: volume 0 to 10 (it carries 16 blocks a unit, at least
+  16), pitch 0.5 to 2 (clamped), `category` one of `master`, `music`, `record`,
+  `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`, `voice`: the
+  slider the player hears it on. `play_sound_to(player, ..)` plays for one
+  player at their own position (a cue, not a place in the world). A sound the
+  game does not know is sent by name and played when the player's resource
+  pack has it.
+- **Limits.** 128 effects a hook call (more is an error). Only the dimension
+  the server is simulating is heard; others are dropped.
+- **Test scripts** check what was sent with `expect.effects`, in order:
+  `particle minecraft:dust x20 @ 0.5 64.2 0.5`, `sound
+  minecraft:block.note_block.chime 1 0.5 block @ 0.5 63.5 0.5`, `sound-to Alex
+  minecraft:entity.player.levelup 1 1 player`. The `cells` example's
+  `/cellfx` puffs dust and chimes, and a sentinel's fall smokes and sounds.
+
+**Not yet.** Sounds of the mod's own (a content mod's sound files and
+`sounds.json` are not wired to this: untested), sounds that follow an entity, stopping
+a sound that is playing, particles with items, trails or vibrations, and
+effects in other dimensions.
+
 #### Redstone (capability `redstone`, experimental)
 
 Redstone for the mod's own blocks, both ways. The game reads the signal on

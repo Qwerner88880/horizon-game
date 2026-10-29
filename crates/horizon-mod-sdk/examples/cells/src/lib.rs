@@ -30,9 +30,9 @@
 //! with it wherever it goes.
 use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
-    Multiblock, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
-    RedstoneOutput, Sides, TankSpec, Transform, UsedBlock, block_entities, displays, energy,
-    entities, fluids, item_hooks, items, machine_recipes, menus, multiblocks, network, players,
+    Multiblock, Particle, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
+    RedstoneOutput, Sides, TankSpec, Transform, UsedBlock, block_entities, displays, effects,
+    energy, entities, fluids, item_hooks, items, machine_recipes, menus, multiblocks, network, players,
     redstone, saved_data,
 };
 use std::collections::BTreeMap;
@@ -55,6 +55,29 @@ const GAUGE: u64 = 1000;
 /// The signal a cell holding `stored` FE gives out.
 fn gauge_level(stored: u64) -> u8 {
     (stored / GAUGE).min(15) as u8
+}
+
+/// What `/cellfx` plays (capability `effects`): a puff of dust above the
+/// cell, green once its gauge is past half and red before, and a chime that
+/// rises in pitch with the gauge.
+fn cell_effects(d: &str, x: i32, y: i32, z: i32, level: u8) {
+    let (cx, cz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
+    let color = if level > 7 { 0x55FF55 } else { 0xFF5555 };
+    let puff = Particle::new("minecraft:dust", cx, f64::from(y) + 1.2, cz, 20)
+        .spread(0.3, 0.3, 0.3)
+        .color(color)
+        .scale(1.0);
+    let _ = effects::spawn_particle(d, &puff);
+    let _ = effects::play_sound(
+        d,
+        "minecraft:block.note_block.chime",
+        cx,
+        f64::from(y) + 0.5,
+        cz,
+        1.0,
+        0.5 + f32::from(level) / 10.0,
+        "block",
+    );
 }
 
 /// A cell's tank (capability `fluids`): 16 buckets. A cell keeps half a
@@ -561,6 +584,7 @@ impl ServerMod for Cells {
                 .command_with("cellnet", [Argument::word("name").optional()])
                 .command_with("cellrecipes", [])
                 .command_with("sentinel", [])
+                .command_with("cellfx", [Argument::block_pos("pos").optional()])
                 .command_with(
                     "cellfluid",
                     [
@@ -767,6 +791,14 @@ impl ServerMod for Cells {
     ) -> Result<Option<String>, String> {
         if name == "cellrecipes" {
             return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
+        }
+        if name == "cellfx" {
+            let (x, y, z) = target(player, args);
+            let d = &player.dimension;
+            block_entities::get(d, x, y, z).ok_or("No cell there")?;
+            let level = gauge_level(stored(d, x, y, z));
+            cell_effects(d, x, y, z, level);
+            return Ok(Some(format!("Cell at {x} {y} {z}: gauge {level}")));
         }
         if name == "cellfluid" {
             // Capability `fluids`: `read` (or no word) reads the tank, `drain` takes a
@@ -1156,6 +1188,20 @@ impl ServerMod for Cells {
     }
 
     fn entity_died(&mut self, entity: &ModEntity) {
+        // A burst of smoke and the golem's own death sound where it fell.
+        let smoke = Particle::new("minecraft:large_smoke", entity.x, entity.y, entity.z, 20)
+            .spread(0.4, 0.6, 0.4);
+        let _ = effects::spawn_particle(&entity.dimension, &smoke);
+        let _ = effects::play_sound(
+            &entity.dimension,
+            "minecraft:entity.iron_golem.death",
+            entity.x,
+            entity.y,
+            entity.z,
+            1.0,
+            1.0,
+            "neutral",
+        );
         players::broadcast(&format!(
             "A sentinel fell at {:.0} {:.0} {:.0}",
             entity.x, entity.y, entity.z

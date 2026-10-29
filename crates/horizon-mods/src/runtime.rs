@@ -252,6 +252,33 @@ mod display_bindings {
 }
 use display_bindings::horizon::mods::displays;
 pub use display_bindings::horizon::mods::displays::{Shape as DisplayShape, Transform};
+/// Capability `effects`' imports.
+mod effects_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "effects-host",
+    });
+}
+use effects_bindings::horizon::mods::effects;
+/// Particles and sounds one hook call may send.
+const EFFECTS_PER_CALL: u32 = 128;
+/// Particles one `spawn-particle` sends.
+const MAX_PARTICLES: u32 = 500;
+
+/// A particle a mod sent, checked: the game finds the particle type by name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectParticle {
+    /// `minecraft:flame`.
+    pub name: String,
+    pub pos: [f64; 3],
+    pub spread: [f32; 3],
+    pub speed: f32,
+    pub count: u32,
+    pub color: Option<u32>,
+    pub scale: Option<f32>,
+    pub block: Option<String>,
+    pub always_show: bool,
+}
 /// Displays one mod may show.
 pub const MAX_DISPLAYS: usize = 1024;
 /// How often a watched structure is checked again (capability
@@ -604,6 +631,29 @@ pub enum Output {
         power: [u8; 6],
         strong: bool,
     },
+    /// `effects.spawn-particle`.
+    Particle {
+        dimension: String,
+        particle: EffectParticle,
+    },
+    /// `effects.play-sound`: a sound at a position, on `SoundSource` index
+    /// `category`.
+    Sound {
+        dimension: String,
+        name: String,
+        pos: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        category: i32,
+    },
+    /// `effects.play-sound-to`: a sound for one player, at their position.
+    SoundTo {
+        player: String,
+        name: String,
+        volume: f32,
+        pitch: f32,
+        category: i32,
+    },
     /// `recipes.give`: a stack for a creative player.
     Give {
         item: String,
@@ -860,6 +910,8 @@ struct State {
     /// Capability `entities`' lent mobs, and the spawns this call made.
     mod_entities: EntityStateSlot,
     entity_spawns: u32,
+    /// Particles and sounds this call has sent.
+    effects_sent: u32,
     /// Messages and bytes this hook call has sent (reset per call).
     net_sent: (u32, usize),
 }
@@ -1839,6 +1891,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             redstone::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            effects::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -1949,6 +2003,7 @@ impl Mods {
             net_sent: (0, 0),
             mod_entities,
             entity_spawns: 0,
+            effects_sent: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -2187,6 +2242,7 @@ impl Mods {
         run.store.data_mut().item_writes = 0;
         run.store.data_mut().net_sent = (0, 0);
         run.store.data_mut().entity_spawns = 0;
+        run.store.data_mut().effects_sent = 0;
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
         // An average over about the last 64 calls.
@@ -3578,6 +3634,155 @@ fn sides_to_wit(s: crate::redstone::Sides) -> redstone::Sides {
 }
 fn sides_from_wit(s: &redstone::Sides) -> crate::redstone::Sides {
     [s.down, s.up, s.north, s.south, s.west, s.east]
+}
+/// A sound or particle name: `namespace:path` or a bare path (the game's
+/// `minecraft:`), in the characters an identifier has.
+fn effect_name_ok(name: &str) -> bool {
+    let plain = |t: &str| {
+        !t.is_empty()
+            && t.len() <= 96
+            && t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-/".contains(&b))
+    };
+    match name.split_once(':') {
+        Some((ns, path)) => plain(ns) && plain(path),
+        None => plain(name),
+    }
+}
+/// `SoundSource` index of a category name, in vanilla's order.
+fn sound_category(name: &str) -> Option<i32> {
+    Some(match name {
+        "master" => 0,
+        "music" => 1,
+        "record" => 2,
+        "weather" => 3,
+        "block" => 4,
+        "hostile" => 5,
+        "neutral" => 6,
+        "player" => 7,
+        "ambient" => 8,
+        "voice" => 9,
+        _ => return None,
+    })
+}
+impl State {
+    /// Counts one effect of this call: an error past the limit.
+    fn count_effect(&mut self) -> Result<(), String> {
+        if self.effects_sent >= EFFECTS_PER_CALL {
+            return Err(format!("at most {EFFECTS_PER_CALL} effects a call"));
+        }
+        self.effects_sent += 1;
+        Ok(())
+    }
+}
+impl effects::Host for State {
+    fn spawn_particle(&mut self, dimension: String, p: effects::Particle) -> Result<(), String> {
+        if !effect_name_ok(&p.name) {
+            return Err(format!(
+                "{:?} is not a particle name (namespace:path)",
+                p.name
+            ));
+        }
+        if ![p.x, p.y, p.z].iter().all(|v| v.is_finite()) {
+            return Err("a position must be finite".into());
+        }
+        let spread = [p.spread_x, p.spread_y, p.spread_z];
+        if spread
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=64.0).contains(v))
+        {
+            return Err("a spread is 0 to 64".into());
+        }
+        if !p.speed.is_finite() || !(0.0..=10.0).contains(&p.speed) {
+            return Err("a speed is 0 to 10".into());
+        }
+        if p.count > MAX_PARTICLES {
+            return Err(format!("at most {MAX_PARTICLES} particles a call"));
+        }
+        if p.color.is_some_and(|c| c > 0xFF_FFFF) {
+            return Err("a colour is 0xRRGGBB".into());
+        }
+        if p.scale
+            .is_some_and(|s| !s.is_finite() || !(0.01..=4.0).contains(&s))
+        {
+            return Err("a scale is 0.01 to 4".into());
+        }
+        if p.block.as_ref().is_some_and(|b| b.len() > 200) {
+            return Err("a block state is at most 200 characters".into());
+        }
+        self.count_effect()?;
+        self.out.push(Output::Particle {
+            dimension,
+            particle: EffectParticle {
+                name: p.name,
+                pos: [p.x, p.y, p.z],
+                spread,
+                speed: p.speed,
+                count: p.count,
+                color: p.color,
+                scale: p.scale,
+                block: p.block,
+                always_show: p.always_show,
+            },
+        });
+        Ok(())
+    }
+    fn play_sound(
+        &mut self,
+        dimension: String,
+        sound: String,
+        x: f64,
+        y: f64,
+        z: f64,
+        volume: f32,
+        pitch: f32,
+        category: String,
+    ) -> Result<(), String> {
+        if !effect_name_ok(&sound) {
+            return Err(format!("{sound:?} is not a sound name (namespace:path)"));
+        }
+        let category = sound_category(&category)
+            .ok_or_else(|| format!("{category:?} is not a sound category"))?;
+        if ![x, y, z].iter().all(|v| v.is_finite()) || !volume.is_finite() || !pitch.is_finite() {
+            return Err("a position, volume and pitch must be finite".into());
+        }
+        self.count_effect()?;
+        self.out.push(Output::Sound {
+            dimension,
+            name: sound,
+            pos: [x, y, z],
+            volume: volume.clamp(0.0, 10.0),
+            pitch: pitch.clamp(0.5, 2.0),
+            category,
+        });
+        Ok(())
+    }
+    fn play_sound_to(
+        &mut self,
+        player: String,
+        sound: String,
+        volume: f32,
+        pitch: f32,
+        category: String,
+    ) -> Result<(), String> {
+        if !effect_name_ok(&sound) {
+            return Err(format!("{sound:?} is not a sound name (namespace:path)"));
+        }
+        let category = sound_category(&category)
+            .ok_or_else(|| format!("{category:?} is not a sound category"))?;
+        if !volume.is_finite() || !pitch.is_finite() {
+            return Err("a volume and pitch must be finite".into());
+        }
+        self.count_effect()?;
+        self.out.push(Output::SoundTo {
+            player,
+            name: sound,
+            volume: volume.clamp(0.0, 10.0),
+            pitch: pitch.clamp(0.5, 2.0),
+            category,
+        });
+        Ok(())
+    }
 }
 impl redstone::Host for State {
     fn get_input(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<redstone::Sides> {

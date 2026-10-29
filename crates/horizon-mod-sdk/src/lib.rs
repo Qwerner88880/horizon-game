@@ -221,6 +221,7 @@ pub mod server {
     };
     pub use horizon::mods::block_entities;
     pub use horizon::mods::displays::{self, Shape, Transform};
+    pub use horizon::mods::effects::{self, Particle};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
     pub use horizon::mods::entities::{self, Entity as ModEntity, SpawnOptions};
     pub use horizon::mods::fluids::{self, FluidStack, Tank, TankSpec};
@@ -443,6 +444,58 @@ pub mod server {
         }
         pub fn health(mut self, health: f32) -> Self {
             self.health = Some(health);
+            self
+        }
+    }
+
+    impl Particle {
+        /// `count` particles named `name` (`minecraft:flame`) scattered
+        /// about a point, moving at `speed`: add `.spread(..)`,
+        /// `.color(..)` and the rest as needed.
+        pub fn new(name: &str, x: f64, y: f64, z: f64, count: u32) -> Self {
+            Self {
+                name: name.into(),
+                x,
+                y,
+                z,
+                spread_x: 0.0,
+                spread_y: 0.0,
+                spread_z: 0.0,
+                speed: 0.0,
+                count,
+                color: None,
+                scale: None,
+                block: None,
+                always_show: false,
+            }
+        }
+        /// How far they scatter on each axis.
+        pub fn spread(mut self, x: f32, y: f32, z: f32) -> Self {
+            (self.spread_x, self.spread_y, self.spread_z) = (x, y, z);
+            self
+        }
+        pub fn speed(mut self, speed: f32) -> Self {
+            self.speed = speed;
+            self
+        }
+        /// 0xRRGGBB, for `dust` and the particles that take a colour.
+        pub fn color(mut self, rgb: u32) -> Self {
+            self.color = Some(rgb);
+            self
+        }
+        /// A dust's size, 0.01 to 4.
+        pub fn scale(mut self, scale: f32) -> Self {
+            self.scale = Some(scale);
+            self
+        }
+        /// A block state, for `block`, `falling_dust` and the like.
+        pub fn block(mut self, state: &str) -> Self {
+            self.block = Some(state.into());
+            self
+        }
+        /// Seen from any distance.
+        pub fn always_show(mut self) -> Self {
+            self.always_show = true;
             self
         }
     }
