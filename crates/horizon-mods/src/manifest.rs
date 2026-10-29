@@ -58,6 +58,15 @@ pub struct Manifest {
     /// accepted here, so the manifest keeps loading once it is promoted.
     #[serde(default)]
     pub experimental: Vec<Capability>,
+    /// The APIs this mod provides to other server mods, capability
+    /// `inter-mod`'s `name@version` entries (`["spin-lib@1.0"]`).
+    #[serde(default)]
+    pub provides: Vec<String>,
+    /// The APIs this mod needs, as `provides` spells them (`["spin-lib@1"]`):
+    /// the game starts their providers first and keeps it off, with the
+    /// reason, when no turned-on mod provides one.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -146,9 +155,12 @@ pub enum Capability {
     GameEvents,
     /// Settings the player edits in a file (server mods).
     Config,
+    /// Messages to other server mods, and theirs: a library mod's API
+    /// shared by the mods that need it (server mods).
+    InterMod,
 }
 impl Capability {
-    pub const ALL: [Capability; 28] = [
+    pub const ALL: [Capability; 29] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -177,6 +189,7 @@ impl Capability {
         Capability::Effects,
         Capability::GameEvents,
         Capability::Config,
+        Capability::InterMod,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's, and either side's may carry content.
@@ -209,6 +222,7 @@ impl Capability {
                 | Capability::Effects
                 | Capability::GameEvents
                 | Capability::Config
+                | Capability::InterMod
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -242,6 +256,7 @@ impl Capability {
             Capability::Effects => "effects",
             Capability::GameEvents => "game-events",
             Capability::Config => "config",
+            Capability::InterMod => "inter-mod",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -269,6 +284,7 @@ impl Capability {
                 | Capability::Effects
                 | Capability::GameEvents
                 | Capability::Config
+                | Capability::InterMod
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -330,6 +346,7 @@ impl Capability {
             Capability::Entities => {
                 "spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die"
             }
+            Capability::InterMod => "send messages to other server mods, and hear theirs",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -387,6 +404,7 @@ impl fmt::Display for Capability {
             Capability::Effects => "effects",
             Capability::GameEvents => "game-events",
             Capability::Config => "config",
+            Capability::InterMod => "inter-mod",
         };
         f.write_str(name)
     }
@@ -481,6 +499,39 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
+        // A library mod's `provides` and `requires` (capability `inter-mod`):
+        // `name@version` entries, the name a channel's characters, the
+        // version major[.minor[.patch]] — both lists need the capability.
+        for (list, what) in [(&m.provides, "provides"), (&m.requires, "requires")] {
+            for (i, entry) in list.iter().enumerate() {
+                let check = |ok: bool, text: String| ok.then_some(()).ok_or(text);
+                let (name, version) = match api_of(entry) {
+                    Some(pair) => pair,
+                    None => {
+                        return Err(format!("{MANIFEST}: {what} {entry:?} is not name@version"));
+                    }
+                };
+                check(
+                    (1..=64).contains(&name.len())
+                        && name.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+                        }),
+                    format!("{MANIFEST}: {what} name {name:?} is not [a-z0-9_.-]{{1,64}}"),
+                )?;
+                check(
+                    version_ok(version),
+                    format!("{MANIFEST}: {what} version {version:?} is not major[.minor[.patch]]"),
+                )?;
+                if list[..i].contains(entry) {
+                    return Err(format!("{MANIFEST}: {what} {entry} is listed twice"));
+                }
+            }
+            if !list.is_empty() && !m.capabilities.contains(&Capability::InterMod) {
+                return Err(format!(
+                    "{MANIFEST}: {what} are for library mods, which need capability inter-mod"
+                ));
+            }
+        }
         Ok(m)
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
@@ -500,6 +551,44 @@ impl Manifest {
             }
         }
         Ok(())
+    }
+}
+
+/// One `provides`/`requires` entry as the manifest spells it, `name@version`,
+/// split. None for a malformed one (a parsed manifest holds none).
+pub fn api_of(entry: &str) -> Option<(&str, &str)> {
+    let (name, version) = entry.split_once('@')?;
+    (!name.is_empty() && !version.is_empty()).then_some((name, version))
+}
+
+/// A `provides`/`requires` version: `major[.minor[.patch]]`, digits.
+fn version_ok(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    (1..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| (1..=9).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A version as comparable numbers, missing parts 0 (`1` is `1.0.0`).
+fn numbers(version: &str) -> (u32, u32, u32) {
+    let mut parts = version.split('.');
+    let part = |parts: &mut std::str::Split<'_, char>| {
+        parts.next().and_then(|p| p.parse().ok()).unwrap_or(0)
+    };
+    (part(&mut parts), part(&mut parts), part(&mut parts))
+}
+
+/// Whether `provides` (one manifest's entry) serves `requires` (another's
+/// need): the same name, the same major version and one at least as new —
+/// a need of `1` takes any `1.x`, a need of `1.2` takes `1.2` and later in
+/// the 1 line, and `2` never serves `1`.
+pub fn serves(provides: &str, requires: &str) -> bool {
+    match (api_of(provides), api_of(requires)) {
+        (Some((pn, pv)), Some((rn, rv))) => {
+            pn == rn && numbers(pv).0 == numbers(rv).0 && numbers(pv) >= numbers(rv)
+        }
+        _ => false,
     }
 }
 
@@ -822,5 +911,54 @@ side = \"server\"
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn library_mods_list_what_they_provide_and_need() {
+        let base = "id = \"spin_bell\"\nname = \"Bell\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n";
+        let parse = |caps: &str, extra: &str| {
+            Manifest::parse(&format!(
+                "{base}capabilities = [{caps}]\nexperimental = [\"inter-mod\"]\n{extra}"
+            ))
+        };
+        let m = parse(
+            "\"inter-mod\", \"players\"",
+            "provides = [\"spin-lib@1.0\"]\nrequires = [\"spin-lib@1\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.provides, ["spin-lib@1.0"]);
+        assert_eq!(m.requires, ["spin-lib@1"]);
+        assert_eq!(Capability::InterMod.to_string(), "inter-mod");
+        assert!(Capability::InterMod.is_experimental());
+        assert!(Capability::InterMod.on_server());
+        // The entries need the capability, and their shape is checked.
+        for what in ["provides", "requires"] {
+            let e = parse("\"players\"", &format!("{what} = [\"spin-lib@1\"]\n")).unwrap_err();
+            assert!(e.contains(&format!("{what} are for library mods")), "{e}");
+            for bad in ["spin-lib", "spin-lib@", "spin-lib@1.2.3.4", "spin-lib@x"] {
+                let e = parse(
+                    "\"inter-mod\", \"players\"",
+                    &format!("{what} = [\"{bad}\"]\n"),
+                )
+                .unwrap_err();
+                assert!(e.contains("is not"), "{bad}: {e}");
+            }
+            let e = parse(
+                "\"inter-mod\", \"players\"",
+                &format!("{what} = [\"spin-lib@1\", \"spin-lib@1\"]\n"),
+            )
+            .unwrap_err();
+            assert!(e.contains("twice"), "{e}");
+        }
+        // A name of the wrong characters, and a version past patch.
+        let e = parse("\"inter-mod\", \"players\"", "provides = [\"Spin@1\"]\n").unwrap_err();
+        assert!(e.contains("is not [a-z0-9_.-]"), "{e}");
+        // `serves`: same name, same major, at least the asked version.
+        assert!(serves("spin-lib@1.0", "spin-lib@1"));
+        assert!(serves("spin-lib@1.2.5", "spin-lib@1.2"));
+        assert!(serves("spin-lib@1.0", "spin-lib@1.0"));
+        assert!(!serves("spin-lib@2.0", "spin-lib@1"));
+        assert!(!serves("spin-lib@1.0", "spin-lib@1.2"));
+        assert!(!serves("other@1.0", "spin-lib@1"));
     }
 }

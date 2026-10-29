@@ -1579,6 +1579,56 @@ interface config-events {
     changed: func(keys: list<string>);
 }
 
+/// Capability `inter-mod`, server mods only (manifest `api = "0.3"`,
+/// experimental): messages between server mods — a library mod's code
+/// shared by the mods that need it. A mod's manifest lists what it
+/// provides (`provides = ["spin-lib@1.0"]`) and what it needs
+/// (`requires = ["spin-lib@1"]`); the game starts providers before the
+/// mods that need them and keeps a mod off, with the reason, whose need no
+/// turned-on mod provides. Messages are bytes on a channel, the mods' own
+/// names and format (as `network`'s), delivered at the end of the server's
+/// tick, in rounds, so an answer arrives within the same tick.
+interface inter-mod {
+    /// A mod that provides an API, as `expose` registered it.
+    record provider {
+        /// The providing mod's id.
+        mod-id: string,
+        version: string,
+    }
+    /// Registers this mod as serving API `name` at `version`, for
+    /// `providers`. `name` `[a-z0-9_.-]{1,64}` and `version`
+    /// `major[.minor[.patch]]` must match one `provides` entry of the
+    /// manifest. At most 8 a mod.
+    expose: func(name: string, version: string) -> result<_, string>;
+    /// The running mods serving API `name` — their ids and versions — as
+    /// of this call. A library turned off is not here.
+    providers: func(name: string) -> list<provider>;
+    /// Receives `publish` of `channel`: `[a-z0-9_./-]{1,64}`, at most 16 a
+    /// mod. Messages wait until the tick's end.
+    subscribe: func(channel: string) -> result<_, string>;
+    /// Sends `data` (up to 30,000 bytes) on `channel` to every other mod
+    /// that subscribed it (a subscriber that cannot hear messages — no
+    /// `inter-mod-events` export — is skipped). Err for a bad channel or
+    /// size, or past 64 messages (256 KiB) in one call.
+    publish: func(channel: string, data: list<u8>) -> result<_, string>;
+    /// Sends to one running server mod, however it gets the channel: the
+    /// other mod hears it in `inter-mod-events.message`. Err for a mod that
+    /// is not running or takes no messages (it runs without the
+    /// `inter-mod-events` export), the mod's own id, a bad channel or size,
+    /// or the same per-call limits.
+    send-to: func(mod-id: string, channel: string, data: list<u8>) -> result<_, string>;
+}
+
+/// What the server calls in a server mod with capability `inter-mod`. A
+/// server mod built before it has no such export and keeps working.
+interface inter-mod-events {
+    /// Another mod sent `data` on `channel` (`publish` of a channel this
+    /// mod subscribed, or `send-to` to it); the sender's id. At most 64
+    /// messages and 512 KiB reach a mod in one tick; the rest wait for the
+    /// next one.
+    message: func(%from: string, channel: string, data: list<u8>);
+}
+
 /// Capability `game-events`, server mods only (manifest `api = "0.3"`,
 /// experimental): the server tells the mod what happens to players and the
 /// world, as a mod bus does: a player hurt, dead, back, in another dimension
@@ -1745,6 +1795,7 @@ world horizon-block-mod {
     import redstone;
     import effects;
     import config;
+    import inter-mod;
     export block-entity-events;
     export menu-events;
     export block-use-events;
@@ -1755,6 +1806,7 @@ world horizon-block-mod {
     export redstone-events;
     export game-events;
     export config-events;
+    export inter-mod-events;
 }
 
 /// The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
@@ -1859,6 +1911,13 @@ world net-server-host {
 world net-client-host {
     import network;
     export network-client-events;
+}
+
+/// The game's side of capability `inter-mod`: a world of its own, so server
+/// mods built before it (no `inter-mod-events` export) still load.
+world inter-mod-host {
+    import inter-mod;
+    export inter-mod-events;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

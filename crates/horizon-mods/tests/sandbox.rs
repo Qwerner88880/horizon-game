@@ -299,8 +299,9 @@ experimental = ["ui", "render", "input", "recipes", "network"]
     assert_eq!(level("coords_hud.hmod"), 0);
     // The UI guest draws far terrain (`render.set-far-terrain`).
     assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
-    // Cells keeps block entities (`block-entities.get`, `.set`).
-    assert_eq!(level("cells.hmod"), LEVEL);
+    // Cells keeps block entities (`block-entities.get`, `.set`); the level
+    // below this Horizon's belongs to `inter-mod`'s functions.
+    assert_eq!(level("cells.hmod"), 23);
     // A server mod built since needs them only when it calls them.
     assert_eq!(level("beacons.hmod"), 4);
 }

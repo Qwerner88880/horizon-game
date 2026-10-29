@@ -210,6 +210,7 @@ pub mod server {
     pub use exports::horizon::mods::config_events::Guest as __ConfigGuest;
     pub use exports::horizon::mods::entity_events::Guest as __EntityGuest;
     pub use exports::horizon::mods::game_events::Guest as __GameEventsGuest;
+    pub use exports::horizon::mods::inter_mod_events::Guest as __InterModGuest;
     pub use exports::horizon::mods::item_events::{
         Entity, Guest as __ItemGuest, PlayerStack, UsedBlock as ItemUsedBlock,
     };
@@ -231,6 +232,7 @@ pub mod server {
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
     pub use horizon::mods::entities::{self, Entity as ModEntity, SpawnOptions};
     pub use horizon::mods::fluids::{self, FluidStack, Tank, TankSpec};
+    pub use horizon::mods::inter_mod::{self, Provider};
     pub use horizon::mods::item_hooks::{self, HeldStack};
     pub use horizon::mods::items::{self, Stack};
     pub use horizon::mods::machine_recipes;
@@ -326,6 +328,11 @@ pub mod server {
         /// `data` on `channel` (capability `network`); answer with
         /// [`network::send_to`].
         fn client_message(&mut self, _player: &Player, _channel: &str, _data: &[u8]) {}
+        /// Capability `inter-mod`: another server mod sent `data` on
+        /// `channel`; `from` is its id. Answer with
+        /// [`inter_mod::send_to`] or `publish`, which reach it within the
+        /// same tick.
+        fn message(&mut self, _from: &str, _channel: &str, _data: &[u8]) {}
         /// Each server tick (capability `entities`): the mod's own mobs in the
         /// level, up to 512. Steer them with [`entities::teleport`] and
         /// friends.
@@ -1041,6 +1048,11 @@ macro_rules! export_server_mod {
             impl $crate::server::__NetGuest for Export {
                 fn client_sent(player: Player, channel: String, data: Vec<u8>) {
                     with(|m| m.client_message(&player, &channel, &data))
+                }
+            }
+            impl $crate::server::__InterModGuest for Export {
+                fn message(from: String, channel: String, data: Vec<u8>) {
+                    with(|m| m.message(&from, &channel, &data))
                 }
             }
             impl $crate::server::__ItemGuest for Export {

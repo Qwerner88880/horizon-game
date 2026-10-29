@@ -35,6 +35,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `effects` | [`effects`](#effects) | show particles and play sounds in the world for the players near them |
 | `game-events` | [`game-events`](#game-events) | be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns |
 | `config` | [`config`](#config) | keep settings in a file you can edit while the game runs, and read them |
+| `inter-mod` | [`inter-mod`](#inter-mod) | send messages to other server mods, and hear theirs |
 
 ## World `horizon-mod`
 
@@ -54,8 +55,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `config`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `config-events`, `server-events`
+- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `config`, `inter-mod`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `config-events`, `inter-mod-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -161,6 +162,13 @@ The game's side of capability `network` for client mods: a world of its own, so 
 
 - Imports (what the game offers): `network`
 - Exports (what the mod provides): `network-client-events`
+
+## World `inter-mod-host`
+
+The game's side of capability `inter-mod`: a world of its own, so server mods built before it (no `inter-mod-events` export) still load.
+
+- Imports (what the game offers): `inter-mod`
+- Exports (what the mod provides): `inter-mod-events`
 
 ## World `horizon-ui-mod`
 
@@ -1498,6 +1506,39 @@ What the server calls in a server mod with capability `config`. A server mod bui
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `changed` | `func(keys: list<string>)` | The file was edited and these entries have new values (checked: a wrong value is already its default again). The game looks every five seconds. |
+
+## `inter-mod`
+
+Access: capability `inter-mod`.
+
+Capability `inter-mod`, server mods only (manifest `api = "0.3"`, experimental): messages between server mods — a library mod's code shared by the mods that need it. A mod's manifest lists what it provides (`provides = ["spin-lib@1.0"]`) and what it needs (`requires = ["spin-lib@1"]`); the game starts providers before the mods that need them and keeps a mod off, with the reason, whose need no turned-on mod provides. Messages are bytes on a channel, the mods' own names and format (as `network`'s), delivered at the end of the server's tick, in rounds, so an answer arrives within the same tick.
+
+### record `provider`
+
+A mod that provides an API, as `expose` registered it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `mod-id` | `string` | The providing mod's id. |
+| `version` | `string` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `expose` | `func(name: string, version: string) -> result<_, string>` | Registers this mod as serving API `name` at `version`, for `providers`. `name` `[a-z0-9_.-]{1,64}` and `version` `major[.minor[.patch]]` must match one `provides` entry of the manifest. At most 8 a mod. |
+| `providers` | `func(name: string) -> list<provider>` | The running mods serving API `name` — their ids and versions — as of this call. A library turned off is not here. |
+| `subscribe` | `func(channel: string) -> result<_, string>` | Receives `publish` of `channel`: `[a-z0-9_./-]{1,64}`, at most 16 a mod. Messages wait until the tick's end. |
+| `publish` | `func(channel: string, data: list<u8>) -> result<_, string>` | Sends `data` (up to 30,000 bytes) on `channel` to every other mod that subscribed it (a subscriber that cannot hear messages — no `inter-mod-events` export — is skipped). Err for a bad channel or size, or past 64 messages (256 KiB) in one call. |
+| `send-to` | `func(mod-id: string, channel: string, data: list<u8>) -> result<_, string>` | Sends to one running server mod, however it gets the channel: the other mod hears it in `inter-mod-events.message`. Err for a mod that is not running or takes no messages (it runs without the `inter-mod-events` export), the mod's own id, a bad channel or size, or the same per-call limits. |
+
+## `inter-mod-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `inter-mod`. A server mod built before it has no such export and keeps working.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `message` | `func(from: string, channel: string, data: list<u8>)` | Another mod sent `data` on `channel` (`publish` of a channel this mod subscribed, or `send-to` to it); the sender's id. At most 64 messages and 512 KiB reach a mod in one tick; the rest wait for the next one. |
 
 ## `game-events`
 
