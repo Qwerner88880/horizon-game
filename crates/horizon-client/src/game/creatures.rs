@@ -2202,7 +2202,11 @@ impl Game<'_> {
         if self.creative {
             return;
         }
-        if let Some(player) = self.player.as_mut()
+        // A mod's claimed armour takes its share first (capability
+        // `item-hooks`); what it takes is gone, the rest hurts.
+        let amount = self.mod_armor_absorb(damage_type, amount);
+        if amount > 0.0
+            && let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
         {
             let _ = player.hurt(&self.motion.health, self.world.health_rules, id, amount);

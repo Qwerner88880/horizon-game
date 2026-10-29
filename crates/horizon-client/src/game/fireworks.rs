@@ -385,11 +385,12 @@ impl Game<'_> {
         if self.creative || self.spectator() {
             return;
         }
-        if let Some(p) = self.player.as_mut()
-            && !p.health.dead_or_dying()
-            && let Some(id) = self.motion.health.damage.id("minecraft:fireworks")
+        if self
+            .player
+            .as_ref()
+            .is_some_and(|p| !p.health.dead_or_dying())
         {
-            let _ = p.hurt(&self.motion.health, self.world.health_rules, id, amount);
+            self.hurt_player_by("minecraft:fireworks", amount);
         }
     }
     /// `FireworkEntityRenderer.submit`: the item (GROUND) facing the camera,

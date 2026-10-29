@@ -6,6 +6,7 @@
 //! Their lines go to the players they name. With no server mod on, each hook
 //! here is one check.
 use super::{Game, lan::LanHost};
+use horizon_mods::items::Stack;
 #[cfg(not(feature = "mods"))]
 use horizon_world::registry::BlockStateId;
 
@@ -64,6 +65,12 @@ pub(super) enum ModEvent {
     /// A player used a block a mod takes the use of: the mod, the position
     /// and the block.
     BlockUse(Who, String, [i32; 3], String),
+    /// A player used (right-clicked) an item a mod takes the behaviour of
+    /// (capability `item-hooks`): the mod, the stack as the mod's
+    /// inventories keep it, and the block under the crosshair if there was
+    /// one (its position and state). The mod's own bytes on the stack are
+    /// read out of `components` at the tick's end, one read per mod.
+    ItemUse(Who, String, Stack, Option<([i32; 3], String)>),
     Block {
         who: Who,
         pos: [i32; 3],
@@ -104,16 +111,46 @@ impl Game<'_> {
     pub(super) fn mod_block_use(&mut self, _pos: [i32; 3]) -> bool {
         false
     }
+    pub(in crate::game) fn mod_item_use(&mut self, _block_hit: Option<&super::Hit>) -> bool {
+        false
+    }
+    pub(in crate::game) fn mod_item_blow(
+        &mut self,
+        _id: u32,
+        _kind: &str,
+        _health: f32,
+        damage: f32,
+    ) -> f32 {
+        damage
+    }
+    pub(in crate::game) fn mod_pvp_blow(
+        &mut self,
+        _host: &mut LanHost,
+        _attacker: Option<u32>,
+        _weapon: &horizon_client::items::ItemStack,
+        _id: u32,
+        _health: f32,
+        damage: f32,
+    ) -> f32 {
+        damage
+    }
+    pub(in crate::game) fn mod_armor_absorb(&mut self, _source: &str, damage: f32) -> f32 {
+        damage
+    }
 }
 
 #[cfg(feature = "mods")]
 mod run {
+    use super::super::Hit;
     use super::ModDisplay;
     use super::{Game, LanHost, ModEvent, ModMenu, Who};
     use horizon_client::chunk_map::ChunkMap;
     use horizon_client::items::ItemStack;
     use horizon_client::lan::containers::ModSlot;
-    use horizon_mods::{DisplayShape, SlotMode, Transform, items::Stack};
+    use horizon_mods::{
+        DisplayShape, HeldStack, ItemEntity, PlayerItems, PlayerStack, SlotMode, TICK_ITEMS,
+        Transform, items::Stack,
+    };
     use horizon_protocol::entity_data::{Value as Data, serializer};
 
     /// Mods' display entities take ids from here up, past the world's.
@@ -285,6 +322,176 @@ mod run {
         )
     }
 
+    /// The key of a mod's own bytes on a stack (capability `item-hooks`): a
+    /// component on the stack, so the bytes travel with it between slots,
+    /// players and the world's saves.
+    fn mod_data_key(mod_id: &str) -> String {
+        format!("horizon:{mod_id}")
+    }
+
+    /// The mod's own bytes on a stack: empty for none.
+    fn mod_stack_data(stack: &ItemStack, mod_id: &str) -> Vec<u8> {
+        stack
+            .data()
+            .and_then(|d| d.other(&mod_data_key(mod_id)))
+            .and_then(|tag| match tag {
+                horizon_world::nbt::Tag::ByteArray(b) => Some(b.as_slice()),
+                _ => None,
+            })
+            .map_or_else(Vec::new, ToOwned::to_owned)
+    }
+
+    /// Replaces the mod's own bytes on a stack (empty removes them).
+    fn set_mod_stack_data(stack: &mut ItemStack, mod_id: &str, data: &[u8]) {
+        let value = (!data.is_empty()).then(|| horizon_world::nbt::Tag::ByteArray(data.to_vec()));
+        stack.data_mut().set_other(&mod_data_key(mod_id), value);
+        stack.tidy();
+    }
+
+    /// The mod's own bytes in a stack's components string, as `store_stack`
+    /// wrote them: the bytes the stack carried when the event was taken.
+    fn mod_data_of(components: &str, mod_id: &str) -> Vec<u8> {
+        horizon_client::item_data::command_components(components)
+            .ok()
+            .and_then(|tag| tag.get(mod_data_key(mod_id).as_str()).cloned())
+            .and_then(|tag| match tag {
+                horizon_world::nbt::Tag::ByteArray(b) => Some(b),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// A player's stacks as capability `item-hooks` numbers slots: the 36
+    /// inventory slots (hotbar first), then armour feet to head 36..39,
+    /// then the off hand 40. The game keeps armour head..feet.
+    fn slots_of(
+        inventory: &[Option<ItemStack>],
+        armor: &[Option<ItemStack>; 4],
+        offhand: &Option<ItemStack>,
+    ) -> Vec<Option<ItemStack>> {
+        let mut slots = inventory.to_vec();
+        slots.extend(armor.iter().rev().cloned());
+        slots.push(offhand.clone());
+        slots
+    }
+
+    /// Writes into one of `slots_of`'s slots of the stacks the game keeps.
+    fn write_player_slot(
+        inventory: &mut [Option<ItemStack>],
+        armor: &mut [Option<ItemStack>; 4],
+        offhand: &mut Option<ItemStack>,
+        slot: u32,
+        stack: Option<ItemStack>,
+    ) {
+        match slot {
+            s if (36..40).contains(&s) => armor[3 - (s - 36) as usize] = stack,
+            40 => *offhand = stack,
+            s => {
+                if let Some(dst) = inventory.get_mut(s as usize) {
+                    *dst = stack;
+                }
+            }
+        }
+    }
+
+    /// The players' stacks for the mods during a call (capability
+    /// `item-hooks`): copies lent in, the `set-data` writes applied when
+    /// the game takes them back.
+    struct LentItems {
+        /// Each player on the server, by id, in `slots_of`'s numbering.
+        players: Vec<(String, Vec<Option<ItemStack>>)>,
+        /// The slots `set-data` wrote, by player and slot.
+        written: Vec<(String, u32)>,
+    }
+
+    impl PlayerItems for LentItems {
+        fn stack(&self, player: &str, slot: u32, mod_id: &str) -> Option<(String, u32, Vec<u8>)> {
+            let slots = self.players.iter().find(|(p, _)| p == player)?.1.as_slice();
+            let stack = slots.get(slot as usize)?.as_ref()?;
+            Some((
+                stack.item.to_string(),
+                stack.count,
+                mod_stack_data(stack, mod_id),
+            ))
+        }
+        fn set_data(
+            &mut self,
+            player: &str,
+            slot: u32,
+            mod_id: &str,
+            data: &[u8],
+        ) -> Result<(), String> {
+            let slots = self
+                .players
+                .iter_mut()
+                .find(|(p, _)| p == player)
+                .map(|(_, s)| s.as_mut_slice())
+                .ok_or_else(|| format!("no player {player} on the server"))?;
+            let stack = slots
+                .get_mut(slot as usize)
+                .and_then(Option::as_mut)
+                .ok_or_else(|| format!("slot {slot} of {player} holds no item"))?;
+            set_mod_stack_data(stack, mod_id, data);
+            self.written.push((player.to_owned(), slot));
+            Ok(())
+        }
+    }
+
+    /// Every player on the server's stacks, by id: the window's own player
+    /// in-frame, then the hub's guests — the guest whose turn it is holds
+    /// the host's stacks in their record and their own in the game, as
+    /// `enter_guest` swapped them. `host` is the hub when it is out of
+    /// `self.lan`.
+    fn player_stacks(game: &Game, host: Option<&LanHost>) -> Vec<(String, Vec<Option<ItemStack>>)> {
+        let local = game.options.execution_role.is_client()
+            && game.remote.is_none()
+            && game.player.is_some();
+        let hub = host.or(game.lan.as_ref());
+        let mut out = Vec::new();
+        // The guest whose turn it is: their stacks are in the game.
+        let acting = game
+            .lan_acting
+            .filter(|_| local)
+            .and_then(|conn| hub?.hub.guest(conn))
+            .map(|g| uuid_string(g.uuid));
+        if let Some(id) = &acting {
+            out.push((
+                id.clone(),
+                slots_of(&game.inventory, &game.armor, &game.offhand),
+            ));
+        }
+        fn placed_guests(
+            hub: &LanHost,
+        ) -> impl Iterator<Item = &horizon_client::lan::guest::Guest> {
+            hub.hub.guests.iter().filter(|g| g.placed)
+        }
+        if local {
+            let id = game.player_uuid_string();
+            if acting.as_ref() != Some(&id) {
+                if let Some(conn) = game.lan_acting {
+                    // While a guest acts, the host's stacks are in their
+                    // record.
+                    if let Some(g) = hub.and_then(|h| h.hub.guests.iter().find(|g| g.conn == conn))
+                    {
+                        out.push((id, slots_of(&g.inventory, &g.armor, &g.offhand)));
+                    }
+                } else {
+                    out.push((id, slots_of(&game.inventory, &game.armor, &game.offhand)));
+                }
+            }
+        }
+        if let Some(hub) = hub {
+            for g in placed_guests(hub) {
+                let id = uuid_string(g.uuid);
+                if out.iter().any(|(p, _)| *p == id) {
+                    continue;
+                }
+                out.push((id, slots_of(&g.inventory, &g.armor, &g.offhand)));
+            }
+        }
+        out
+    }
+
     fn mode(id: i32) -> GameMode {
         match id {
             1 => GameMode::Creative,
@@ -341,6 +548,304 @@ mod run {
         /// and this game simulates the world.
         fn hears_players(&self) -> bool {
             self.mods.server && self.remote.is_none()
+        }
+
+        /// The player acting, as the server mods see them: the guest whose
+        /// turn it is, else the window's own player.
+        fn acting_server_player(&self, host: Option<&LanHost>) -> Option<ServerPlayer> {
+            let players = self.server_players(host);
+            let id = match self.lan_acting_uuid {
+                Some(guest) => uuid_string(guest),
+                None => self.player_uuid_string(),
+            };
+            players.into_iter().find(|p| p.id == id)
+        }
+
+        /// Lends the players' stacks to capability `item-hooks` for the
+        /// calls until [`Game::return_lent_player_items`]: copies, the
+        /// writes applied on the way back. `host` is the hub when it is out
+        /// of `self.lan`.
+        fn lend_player_items(&mut self, host: Option<&LanHost>) {
+            if !self.mods.player_items {
+                return;
+            }
+            let players = player_stacks(self, host);
+            self.mods.mods.lend_player_items(Box::new(LentItems {
+                players,
+                written: Vec::new(),
+            }));
+        }
+
+        /// The stacks [`Game::lend_player_items`] lent, back to the game:
+        /// each `set-data` write into the player it belongs to, whose
+        /// client is told on their next flush. `host` is the hub when it is
+        /// out of `self.lan`.
+        fn return_lent_player_items(&mut self, mut host: Option<&mut LanHost>) {
+            let Some(view) = self.mods.mods.take_player_items() else {
+                return;
+            };
+            let view: Box<dyn std::any::Any> = view;
+            let Ok(mut lent) = view.downcast::<LentItems>() else {
+                return;
+            };
+            if lent.written.is_empty() {
+                return;
+            }
+            for (id, slot) in std::mem::take(&mut lent.written) {
+                let Some(stack) = lent
+                    .players
+                    .iter()
+                    .find(|(p, _)| *p == id)
+                    .and_then(|(_, slots)| slots.get(slot as usize))
+                    .cloned()
+                    .flatten()
+                else {
+                    continue;
+                };
+                // The lend window is the mod's own call: the game's stacks
+                // stand as they were copied.
+                let acting = self.lan_acting_uuid.is_some_and(|u| uuid_string(u) == id);
+                if acting || (self.lan_acting.is_none() && id == self.player_uuid_string()) {
+                    // The guest whose turn it is keeps their stacks in the
+                    // game, as the window's own player does the rest of
+                    // the time.
+                    write_player_slot(
+                        &mut self.inventory,
+                        &mut self.armor,
+                        &mut self.offhand,
+                        slot,
+                        Some(stack),
+                    );
+                } else {
+                    let hub = match host.as_mut() {
+                        Some(h) => Some(&mut **h),
+                        None => self.lan.as_mut(),
+                    };
+                    if let Some(g) = hub
+                        .and_then(|h| h.hub.guests.iter_mut().find(|g| uuid_string(g.uuid) == id))
+                    {
+                        write_player_slot(
+                            &mut g.inventory,
+                            &mut g.armor,
+                            &mut g.offhand,
+                            slot,
+                            Some(stack),
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Lends the mods the server's stores and the players' stacks for
+        /// one synchronous call (an item's blow, armour's take), and takes
+        /// them back. The world is not lent: these hooks read no blocks,
+        /// and lending would move the levels' chunks for every blow.
+        /// `host` is the hub when it is out of `self.lan`.
+        fn with_mod_stores<R>(
+            &mut self,
+            host: Option<&mut LanHost>,
+            f: impl FnOnce(&mut Self) -> R,
+        ) -> R {
+            self.read_mod_block_entities();
+            let store = std::mem::take(&mut self.mods.block_entities);
+            self.mods.mods.lend_block_entities(store);
+            self.lend_player_items(host.as_deref());
+            let r = f(self);
+            if let Some(store) = self.mods.mods.take_block_entities() {
+                self.mods.block_entities = store;
+            }
+            self.return_lent_player_items(host);
+            r
+        }
+
+        /// The acting player used (right-clicked) the main hand's item:
+        /// true when a server mod takes the behaviour of it (capability
+        /// `item-hooks`), and the game does nothing else with the click
+        /// (the mod hears it at the tick's end). A sneaking player keeps
+        /// vanilla's use, and a block a mod takes the use of wins over the
+        /// item (`mod_block_use` already ran).
+        pub(in crate::game) fn mod_item_use(&mut self, block_hit: Option<&Hit>) -> bool {
+            if !self.hears_players() {
+                return false;
+            }
+            let claims = self.mods.mods.item_use_claims();
+            if claims.is_empty() {
+                return false;
+            }
+            // A sneaking player keeps vanilla's use, as with a mod's block.
+            if self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
+                return false;
+            }
+            let Some(stack) = self.stack_in(self.selected).cloned() else {
+                return false;
+            };
+            let takers: Vec<String> = claims
+                .into_iter()
+                .filter(|(_, items)| items.iter().any(|i| i == stack.item.as_ref()))
+                .map(|(id, _)| id)
+                .collect();
+            if takers.is_empty() {
+                return false;
+            }
+            let on_block = block_hit.map(|hit| {
+                let state = self.state_string(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]));
+                (hit.pos, state)
+            });
+            let event_stack = Self::store_stack(&stack);
+            let who = || self.lan_acting.map_or(Who::Local, Who::Conn);
+            for id in &takers {
+                self.mods.events.push(ModEvent::ItemUse(
+                    who(),
+                    id.clone(),
+                    event_stack.clone(),
+                    on_block.clone(),
+                ));
+            }
+            true
+        }
+
+        /// The damage of a blow with a claimed item in the main hand
+        /// (capability `item-hooks`): each mod claiming the item answers,
+        /// before the blow lands.
+        pub(in crate::game) fn mod_item_blow(
+            &mut self,
+            id: u32,
+            kind: &str,
+            health: f32,
+            damage: f32,
+        ) -> f32 {
+            let claims = self.mods.mods.item_use_claims();
+            let Some(stack) = self.stack_in(self.selected).cloned() else {
+                return damage;
+            };
+            let takers: Vec<String> = claims
+                .into_iter()
+                .filter(|(_, items)| items.iter().any(|i| i == stack.item.as_ref()))
+                .map(|(id, _)| id)
+                .collect();
+            if takers.is_empty() || !self.hears_players() {
+                return damage;
+            }
+            let Some(player) = self.acting_server_player(None) else {
+                return damage;
+            };
+            // The hub is taken out for the call: its guests' stacks are
+            // lent, and the mods send nothing while they answer.
+            let mut host = self.lan.take();
+            let damage = self.item_blow(host.as_mut(), &player, &stack, id, kind, health, damage);
+            self.lan = host;
+            damage
+        }
+
+        /// As `mod_item_blow`, for a player's blow on a player: the weapon
+        /// and the attacker as the strike kept them (the attacker's turn
+        /// may have ended by the time the blow lands).
+        pub(in crate::game) fn mod_pvp_blow(
+            &mut self,
+            host: &mut LanHost,
+            attacker: Option<u32>,
+            weapon: &ItemStack,
+            id: u32,
+            health: f32,
+            damage: f32,
+        ) -> f32 {
+            let claims = self.mods.mods.item_use_claims();
+            if claims.is_empty() || !self.hears_players() {
+                return damage;
+            }
+            if !claims
+                .iter()
+                .any(|(_, items)| items.iter().any(|i| i == weapon.item.as_ref()))
+            {
+                return damage;
+            }
+            let player = match attacker {
+                Some(conn) => host.hub.guest(conn).map(|g| ServerPlayer {
+                    id: uuid_string(g.uuid),
+                    name: g.name.clone(),
+                    x: g.position[0],
+                    y: g.position[1],
+                    z: g.position[2],
+                    dimension: g.dimension.clone(),
+                    game_mode: mode(g.game_mode),
+                    health: g.health,
+                }),
+                None => self.acting_server_player(None),
+            };
+            let Some(player) = player else {
+                return damage;
+            };
+            self.item_blow(
+                Some(host),
+                &player,
+                weapon,
+                id,
+                "minecraft:player",
+                health,
+                damage,
+            )
+        }
+
+        /// One blow's damage: the claimed item's mods answer in turn, each
+        /// with the damage the last left.
+        fn item_blow(
+            &mut self,
+            host: Option<&mut LanHost>,
+            player: &ServerPlayer,
+            weapon: &ItemStack,
+            id: u32,
+            kind: &str,
+            health: f32,
+            damage: f32,
+        ) -> f32 {
+            let takers: Vec<String> = self
+                .mods
+                .mods
+                .item_use_claims()
+                .into_iter()
+                .filter(|(_, items)| items.iter().any(|i| i == weapon.item.as_ref()))
+                .map(|(id, _)| id)
+                .collect();
+            let entity = ItemEntity {
+                id,
+                kind: kind.to_owned(),
+                health,
+            };
+            let item = weapon.item.to_string();
+            let count = weapon.count;
+            let mut damage = damage;
+            self.with_mod_stores(host, |g| {
+                for mod_id in &takers {
+                    let held = HeldStack {
+                        item: item.clone(),
+                        count,
+                        data: mod_stack_data(weapon, mod_id),
+                    };
+                    damage = g
+                        .mods
+                        .mods
+                        .item_hurt_entity(mod_id, player, held, &entity, damage);
+                }
+                damage
+            })
+        }
+
+        /// The players' claimed armour takes its share of a hurt (capability
+        /// `item-hooks`): the damage left after it. Called in the funnel
+        /// every hurt of a named type goes through (`hurt_player_by`).
+        pub(in crate::game) fn mod_armor_absorb(&mut self, source: &str, damage: f32) -> f32 {
+            if !self.hears_players() || !self.mods.player_items || damage <= 0.0 {
+                return damage;
+            }
+            let Some(player) = self.acting_server_player(None) else {
+                return damage;
+            };
+            let mut host = self.lan.take();
+            let left = self.with_mod_stores(host.as_mut(), |g| {
+                damage - g.mods.mods.item_hurt(&player, damage, source)
+            });
+            self.lan = host;
+            left
         }
 
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
@@ -409,6 +914,18 @@ mod run {
                                 .block_used(&mod_id, &p, &dimension, pos, &state);
                         }
                     }
+                    ModEvent::ItemUse(w, mod_id, stack, on_block) => {
+                        if let Some(p) = who(&w) {
+                            let held = HeldStack {
+                                item: stack.item.clone(),
+                                count: stack.count,
+                                data: mod_data_of(&stack.components, &mod_id),
+                            };
+                            let block =
+                                on_block.as_ref().map(|(pos, state)| (*pos, state.as_str()));
+                            self.mods.mods.item_used(&mod_id, &p, held, block);
+                        }
+                    }
                     ModEvent::Block {
                         who: w,
                         pos,
@@ -443,12 +960,59 @@ mod run {
             }
             self.mods.mods.server_tick(self.ticks);
             self.mods.mods.block_entity_tick(self.ticks);
+            self.mod_items_tick(&players);
             self.sync_mod_displays(None);
             self.return_world();
             self.refresh_mod_menus(None);
             self.mods.players = players;
             self.show_mod_output();
             self.apply_mod_block_writes();
+        }
+
+        /// Each server tick, after `block_entity_tick`: every claimed stack
+        /// of every online player to the mod that claims it, held or worn
+        /// (`inventory-tick`, capability `item-hooks`). A longer list than
+        /// one call's is walked round-robin by the tick, so the same stacks
+        /// are not cut off every tick.
+        fn mod_items_tick(&mut self, players: &[ServerPlayer]) {
+            let claims = self.mods.mods.item_use_claims();
+            if claims.is_empty() || players.is_empty() {
+                return;
+            }
+            let stacks = player_stacks(self, None);
+            let mut lists = Vec::with_capacity(claims.len());
+            for (id, items) in &claims {
+                let mut held: Vec<PlayerStack> = Vec::new();
+                for (player, slots) in &stacks {
+                    let Some(p) = players.iter().find(|p| &p.id == player) else {
+                        continue;
+                    };
+                    for (slot, stack) in slots.iter().enumerate() {
+                        let Some(stack) = stack else {
+                            continue;
+                        };
+                        if !items.iter().any(|i| i == stack.item.as_ref()) {
+                            continue;
+                        }
+                        held.push(PlayerStack {
+                            player: p.clone(),
+                            slot: slot as u32,
+                            stack: HeldStack {
+                                item: stack.item.to_string(),
+                                count: stack.count,
+                                data: mod_stack_data(stack, id),
+                            },
+                        });
+                    }
+                }
+                let len = held.len();
+                if len > TICK_ITEMS {
+                    held.rotate_left(self.ticks as usize % len);
+                    held.truncate(TICK_ITEMS);
+                }
+                lists.push((id.clone(), held));
+            }
+            self.mods.mods.player_items_tick(self.ticks, &lists);
         }
 
         /// Players' command trees list the running server mods' commands
@@ -466,8 +1030,22 @@ mod run {
         }
 
         /// Lends the levels' chunks to capability `world` for the calls up to
-        /// [`Game::return_world`], when a running server mod has it.
+        /// [`Game::return_world`], when a running server mod has it. The
+        /// server's stores and the players' stacks are lent whatever the
+        /// mods' capabilities: item hooks (capability `item-hooks`) change
+        /// stacks beside block entities' buffers, in the same hooks.
         fn lend_world(&mut self) {
+            self.lend_world_with(None);
+        }
+
+        /// [`Game::lend_world`], with the hub when it is out of `self.lan`
+        /// (a connection's command): the stacks of every player on it are
+        /// lent, not only those the game can reach.
+        fn lend_world_with(&mut self, host: Option<&mut LanHost>) {
+            self.read_mod_block_entities();
+            let store = std::mem::take(&mut self.mods.block_entities);
+            self.mods.mods.lend_block_entities(store);
+            self.lend_player_items(host.as_deref());
             if !self.mods.world {
                 return;
             }
@@ -496,9 +1074,6 @@ mod run {
                 dims,
                 max_stacks,
             }));
-            self.read_mod_block_entities();
-            let store = std::mem::take(&mut self.mods.block_entities);
-            self.mods.mods.lend_block_entities(store);
         }
 
         /// Reads capability `block-entities`' store from the world folder,
@@ -526,9 +1101,16 @@ mod run {
 
         /// Puts back the chunks [`Game::lend_world`] lent.
         fn return_world(&mut self) {
+            self.return_world_with(None);
+        }
+
+        /// [`Game::return_world`], with the hub when it is out of
+        /// `self.lan` (a connection's command), for the players' stacks.
+        fn return_world_with(&mut self, host: Option<&mut LanHost>) {
             if let Some(store) = self.mods.mods.take_block_entities() {
                 self.mods.block_entities = store;
             }
+            self.return_lent_player_items(host);
             let Some(view) = self.mods.mods.take_world() else {
                 return;
             };
@@ -1005,9 +1587,12 @@ mod run {
             };
             let snapshot = self.mod_snapshot_with(players);
             self.mods.mods.set_snapshot(snapshot);
-            self.lend_world();
+            // The hub is lent with the world: the typer's stacks are in it,
+            // not in the game, so /commands reach them (capability
+            // `item-hooks`).
+            self.lend_world_with(Some(&mut *host));
             let owned = self.mods.mods.server_command(&me, line);
-            self.return_world();
+            self.return_world_with(Some(&mut *host));
             if !owned {
                 return false;
             }

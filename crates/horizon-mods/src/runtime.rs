@@ -125,16 +125,16 @@ mod item_bindings {
         },
     });
 }
+/// The struck entity as `hurt-entity` tells of it.
+pub use item_bindings::exports::horizon::mods::item_events::Entity as ItemEntity;
+/// One player's claimed stack in an `inventory-tick` list.
+pub use item_bindings::exports::horizon::mods::item_events::PlayerStack;
+/// The block under the crosshair in `used-on-block`.
+pub use item_bindings::exports::horizon::mods::item_events::UsedBlock as ItemUsedBlock;
 /// A stack as capability `item-hooks` hands it to a mod: the item, its count
 /// and the mod's own bytes on it.
 pub use item_bindings::horizon::mods::item_hooks::HeldStack;
-use item_bindings::{
-    ItemHost,
-    exports::horizon::mods::item_events::{
-        Entity as ItemEntity, PlayerStack, UsedBlock as ItemUsedBlock,
-    },
-    horizon::mods::item_hooks,
-};
+use item_bindings::{ItemHost, horizon::mods::item_hooks};
 /// Capability `displays`' imports.
 mod display_bindings {
     wasmtime::component::bindgen!({
@@ -3154,11 +3154,9 @@ impl item_hooks::Host for State {
         let view = self.player_items.lock().ok()?;
         let view = view.as_ref()?;
         let (item, count, data) = view.stack(&player, slot, &self.id)?;
-        self.item_claims.contains(&item).then_some(HeldStack {
-            item,
-            count,
-            data,
-        })
+        self.item_claims
+            .contains(&item)
+            .then_some(HeldStack { item, count, data })
     }
     fn set_data(&mut self, player: String, slot: u32, data: Option<Vec<u8>>) -> Result<(), String> {
         if self.item_writes >= SET_DATA_PER_CALL {

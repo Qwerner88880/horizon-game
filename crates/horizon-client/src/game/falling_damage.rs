@@ -127,10 +127,6 @@ impl Game<'_> {
         } else {
             amount
         };
-        if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(kind)
-        {
-            let _ = p.hurt(&self.motion.health, self.world.health_rules, id, amount);
-        }
+        self.hurt_player_by(kind, amount);
     }
 }

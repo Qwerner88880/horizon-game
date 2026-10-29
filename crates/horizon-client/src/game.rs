@@ -4326,6 +4326,12 @@ impl Game<'_> {
         {
             return Ok(false);
         }
+        // A server mod's item (capability `item-hooks`): the mod takes the
+        // click, main hand only — the off hand's turn stays vanilla's.
+        if self.hand == Hand::Main && self.mod_item_use(block_hit) {
+            self.swing_arm();
+            return Ok(true);
+        }
         if block_hit.is_some() && (self.use_bone_meal(&stack)? || self.ignite_tnt(&stack)?) {
             return Ok(true);
         }
@@ -8666,6 +8672,14 @@ impl Game<'_> {
         let target_kind = self.mobs[index].kind.id.clone();
         let target_kind = format!("minecraft:{}", target_kind.trim_start_matches("minecraft:"));
         let (amount, scale, crit, magic) = self.melee_damage(&target_kind);
+        // A claimed item in the main hand answers for the blow (capability
+        // `item-hooks`), before the hit lands.
+        let amount = self.mod_item_blow(
+            self.mobs[index].id,
+            &target_kind,
+            self.mobs[index].health,
+            amount,
+        );
         let sweep = self.sweep_attack_position(scale, crit);
         let (knockback, knockback_attack) = self.extra_knockback(&target_kind, scale);
         self.attack_ticks = 0;

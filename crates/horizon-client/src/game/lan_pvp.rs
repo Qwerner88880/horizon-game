@@ -9,6 +9,7 @@ use super::{Game, lan::LanHost, lan_mobs::guest_bounds, ray_box, view_vector};
 
 use horizon_client::{
     Result,
+    items::ItemStack,
     mobs::Who,
     projectiles::{Hit, Projectile, ProjectileKind},
 };
@@ -36,6 +37,10 @@ pub(super) struct Strike {
     /// The attacking guest, kept after their turn through `as_guest` ends.
     attacker: Option<u32>,
     amount: f32,
+    /// The main hand's stack as the attacker struck (capability
+    /// `item-hooks`): a claimed item answers for the blow when it lands,
+    /// the attacker's turn over by then.
+    weapon: Option<ItemStack>,
     scale: f32,
     crit: bool,
     /// `Player.attack`'s `magicBoost > 0`: the enchantments added damage.
@@ -167,6 +172,7 @@ impl Game<'_> {
         Some(Strike {
             attacker: self.lan_acting,
             amount,
+            weapon: self.stack_in(self.selected).cloned(),
             scale,
             crit,
             magic,
@@ -286,9 +292,25 @@ impl Game<'_> {
         }
         // Player.attack: the hurt (with its knockback away from the
         // attacker), then causeExtraKnockback along the attacker's yaw.
+        // A claimed item in the attacker's main hand answers for the blow
+        // (capability `item-hooks`), before the hurt lands.
+        let (id, health) = match victim {
+            Victim::Host => (
+                host.host_entity as u32,
+                self.player.as_ref().map_or(0.0, |p| p.health.health()),
+            ),
+            Victim::Guest(conn) => host
+                .hub
+                .guest(conn)
+                .map_or((0, 0.0), |g| (g.entity_id as u32, g.health)),
+        };
+        let amount = match &s.weapon {
+            Some(weapon) => self.mod_pvp_blow(host, s.attacker, weapon, id, health, s.amount),
+            None => s.amount,
+        };
         let land = |g: &mut Self| {
             g.combat.player_attacker = Some((s.from, s.disable_blocking));
-            let hurt = g.mob_hits_player(s.amount, s.from, "minecraft:player_attack");
+            let hurt = g.mob_hits_player(amount, s.from, "minecraft:player_attack");
             g.combat.player_attacker = None;
             let (strength, xd, zd) = s.knockback;
             if hurt && strength > 0.0 {

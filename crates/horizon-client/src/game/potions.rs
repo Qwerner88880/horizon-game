@@ -578,42 +578,47 @@ impl Game<'_> {
     }
     pub(super) fn apply_effect_action(&mut self, action: EffectAction) {
         let creative = self.creative;
-        let rules = self.world.health_rules;
-        let Some(p) = self.player.as_mut() else {
-            return;
-        };
+        // The two hurts go through `hurt_player_by`, where a mod's claimed
+        // armour (capability `item-hooks`) takes its share.
         match action {
-            EffectAction::Heal(amount) => {
-                let max = p.attribute("minecraft:max_health").unwrap_or(20.0) as f32;
-                let h = p.health.health();
-                if h > 0.0 {
-                    let _ = p.set_health((h + amount).min(max), false);
-                }
-            }
             EffectAction::Hurt(source, amount) => {
-                if creative {
-                    return;
-                }
-                if let Some(id) = self.motion.health.damage.id(source) {
-                    let _ = p.hurt(&self.motion.health, rules, id, amount);
+                if !creative {
+                    self.hurt_player_by(source, amount);
                 }
             }
             EffectAction::Poison => {
                 if !creative
-                    && p.health.health() > 1.0
-                    && let Some(id) = self.motion.health.damage.id("minecraft:magic")
+                    && self
+                        .player
+                        .as_ref()
+                        .is_some_and(|p| p.health.health() > 1.0)
                 {
-                    let _ = p.hurt(&self.motion.health, rules, id, 1.0);
+                    self.hurt_player_by("minecraft:magic", 1.0);
                 }
             }
-            EffectAction::Exhaust(amount) => {
-                p.cause_food_exhaustion(amount);
-            }
-            EffectAction::Eat(nutrition, saturation) => {
-                let food = &mut p.health.food;
-                food.food = (food.food + nutrition).clamp(0, 20);
-                food.saturation = (food.saturation + nutrition as f32 * saturation * 2.0)
-                    .clamp(0.0, food.food as f32);
+            _ => {
+                let Some(p) = self.player.as_mut() else {
+                    return;
+                };
+                match action {
+                    EffectAction::Heal(amount) => {
+                        let max = p.attribute("minecraft:max_health").unwrap_or(20.0) as f32;
+                        let h = p.health.health();
+                        if h > 0.0 {
+                            let _ = p.set_health((h + amount).min(max), false);
+                        }
+                    }
+                    EffectAction::Exhaust(amount) => {
+                        p.cause_food_exhaustion(amount);
+                    }
+                    EffectAction::Eat(nutrition, saturation) => {
+                        let food = &mut p.health.food;
+                        food.food = (food.food + nutrition).clamp(0, 20);
+                        food.saturation = (food.saturation + nutrition as f32 * saturation * 2.0)
+                            .clamp(0.0, food.food as f32);
+                    }
+                    _ => {}
+                }
             }
         }
     }

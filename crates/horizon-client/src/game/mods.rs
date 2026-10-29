@@ -67,6 +67,10 @@ pub(super) struct ModsState {
     /// levels' chunks to read.
     #[cfg(feature = "mods")]
     pub(super) world: bool,
+    /// A running server mod claims items (capability `item-hooks`): its
+    /// calls get the players' stacks.
+    #[cfg(feature = "mods")]
+    pub(super) player_items: bool,
     /// Capability `block-entities`' store, and the world folder it was read
     /// from (`None`: not read yet).
     #[cfg(feature = "mods")]
@@ -362,6 +366,7 @@ impl Game<'_> {
     fn list_mods(&mut self) {
         self.mods.server = self.mods.mods.runs_server();
         self.mods.world = self.mods.mods.wants_world();
+        self.mods.player_items = self.mods.mods.wants_player_items();
         let dev = &self.mods.dev;
         self.settings.mods.installed = self
             .mods
