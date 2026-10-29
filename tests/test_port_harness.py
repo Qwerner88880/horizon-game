@@ -11,6 +11,20 @@ JAVAC = """/x/mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java:4
 """
 
 
+def symlinks_possible():
+    """Whether this account may create symlinks: on Windows that needs
+    Developer Mode or admin (WinError 1314 otherwise), as the Git hook's
+    `sh` and `python3` need to exist (tests/test_pre_push.py)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target, link = Path(tmp) / "t", Path(tmp) / "l"
+        target.write_text("x")
+        try:
+            link.symlink_to(target)
+        except OSError:
+            return False
+    return True
+
+
 def state(**statuses):
     return {"harnesses": {name.replace("_1", "#1"): {"status": status} for name, status in statuses.items()}}
 
@@ -59,6 +73,7 @@ class AssetTests(unittest.TestCase):
             self.assertIn("Oracle.java:33: error", harness.named_logs(output))
             self.assertEqual(harness.named_logs("error: see /nonexistent/x.log"), "")
 
+    @unittest.skipUnless(symlinks_possible(), "symlinks need Developer Mode or admin on Windows")
     def test_the_reports_link_goes_before_horizon_prepare(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, store = Path(tmp) / "candidate", Path(tmp) / "store-reports"
