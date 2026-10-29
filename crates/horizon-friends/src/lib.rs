@@ -176,6 +176,12 @@ mod tests {
         let (mut ended, _) = l.accept().unwrap();
         drop(deadline(&kept, Duration::from_millis(100)).unwrap());
         let _running = deadline(&ended, Duration::from_millis(100)).unwrap();
+        // Read after the deadline has fired, not while it races the read:
+        // Windows never wakes a read that is already blocked when another
+        // thread shuts the socket down, while a read begun afterwards sees
+        // the end as any platform does.
+        std::thread::sleep(Duration::from_millis(200));
+        ended.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         let started = Instant::now();
         assert_eq!(ended.read(&mut [0u8; 1]).unwrap(), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
