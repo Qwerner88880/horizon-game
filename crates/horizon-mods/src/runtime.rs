@@ -78,7 +78,7 @@ mod block_bindings {
 pub use block_bindings::exports::horizon::mods::block_entity_events::BlockEntity;
 use block_bindings::{
     BlockEntityHost,
-    horizon::mods::{block_entities, energy, items as mod_items},
+    horizon::mods::{block_entities, energy, fluids, items as mod_items},
 };
 /// Capability `menus`' world: its own, so server mods built before it (no
 /// `menu-events` export) still load. `players` is the server world's.
@@ -992,6 +992,7 @@ impl Mods {
                         }
                     }
                     store.energy.remove(&id, &key);
+                    store.fluids.remove(&id, &key);
                     let stacks = store.items.remove(&id, &key);
                     if !stacks.is_empty() {
                         self.out.push(Output::DropItems {
@@ -3463,6 +3464,111 @@ impl mod_items::Host for State {
         self.with_store(|s, _| s.items.extract(&key, slot as usize, count, simulate))
             .ok()?
             .map(|s| from_store(&s))
+    }
+}
+impl fluids::Host for State {
+    fn set_tanks(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        tanks: Vec<fluids::TankSpec>,
+    ) -> Result<(), String> {
+        let key = (dimension, [x, y, z]);
+        let specs: Vec<crate::fluids::Spec> = tanks
+            .iter()
+            .map(|t| crate::fluids::Spec {
+                capacity: t.capacity,
+                max_receive: t.max_receive,
+                max_extract: t.max_extract,
+            })
+            .collect();
+        self.with_store(|s, id| {
+            if s.get(id, &key).is_none() {
+                return Err(format!(
+                    "no block entity of this mod at {x} {y} {z} in {}",
+                    key.0
+                ));
+            }
+            s.fluids.set_tanks(id, key, &specs)
+        })?
+    }
+    fn get(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<Vec<fluids::Tank>> {
+        let tanks = self
+            .with_store(|s, _| s.fluids.get(&(dimension, [x, y, z])))
+            .ok()??;
+        Some(
+            tanks
+                .into_iter()
+                .map(|t| fluids::Tank {
+                    fluid: t.fluid,
+                    amount: t.amount,
+                    capacity: t.spec.capacity,
+                    max_receive: t.spec.max_receive,
+                    max_extract: t.spec.max_extract,
+                })
+                .collect(),
+        )
+    }
+    fn set(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        tank: u32,
+        fluid: Option<String>,
+        amount: u64,
+    ) -> Result<(), String> {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, id| {
+            s.fluids
+                .set(id, &key, tank as usize, fluid.as_deref(), amount)
+        })?
+    }
+    fn insert(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        fluid: String,
+        amount: u64,
+        simulate: bool,
+    ) -> u64 {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, _| s.fluids.insert(&key, &fluid, amount, simulate))
+            .unwrap_or(0)
+    }
+    fn extract(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        tank: u32,
+        amount: u64,
+        simulate: bool,
+    ) -> Option<fluids::FluidStack> {
+        let key = (dimension, [x, y, z]);
+        let (fluid, amount) = self
+            .with_store(|s, _| s.fluids.extract(&key, tank as usize, amount, simulate))
+            .ok()??;
+        Some(fluids::FluidStack { fluid, amount })
+    }
+    fn push(&mut self, dimension: String, x: i32, y: i32, z: i32, tank: u32, amount: u64) -> u64 {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, id| s.fluids.push(id, &key, tank as usize, amount))
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(0)
+    }
+    fn fluid_of_bucket(&mut self, item: String) -> Option<String> {
+        crate::fluids::fluid_of_bucket(&item).map(str::to_owned)
+    }
+    fn bucket_of_fluid(&mut self, fluid: String) -> Option<String> {
+        crate::fluids::bucket_of_fluid(&fluid).map(str::to_owned)
     }
 }
 impl energy::Host for State {

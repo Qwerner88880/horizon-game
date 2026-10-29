@@ -11,6 +11,7 @@ pub mod block_entities;
 pub mod commands;
 pub mod content;
 pub mod energy;
+pub mod fluids;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod items;

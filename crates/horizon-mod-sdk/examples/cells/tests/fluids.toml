@@ -1,0 +1,57 @@
+# Capability fluids: every cell has a 16-bucket tank. A cell keeps half a
+# bucket and passes on what is above it, 100 mB a tick, to the cells beside
+# it; the others take nothing of what they hold a different fluid for.
+
+# Two cells side by side. The first tick gives each its tank.
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+place = { x = 1, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 2
+command = "cellfluid"
+expect.feedback = "Cell at 0 63 0: empty / 16000 mB"
+
+# A bucket in the cell the player stands on.
+[[step]]
+command = "cellfluid water"
+expect.feedback = "Put 1000 mB of minecraft:water in"
+
+# Five ticks pass 100 mB each to the neighbour, down to the half bucket the
+# cell keeps; the neighbour holds the same, and keeps it.
+[[step]]
+ticks = 5
+command = "cellfluid read"
+expect.feedback = "Cell at 0 63 0: minecraft:water 500 / 16000 mB"
+
+[[step]]
+ticks = 3
+command = "cellfluid read 1 63 0"
+expect.feedback = "Cell at 1 63 0: minecraft:water 500 / 16000 mB"
+
+# Lava does not mix into a tank of water.
+[[step]]
+command = "cellfluid lava"
+expect.error = "The tank takes no minecraft:lava"
+
+# Draining takes it out and names the bucket that holds it.
+[[step]]
+command = "cellfluid drain"
+expect.feedback = "Took 500 mB of minecraft:water (minecraft:water_bucket)"
+
+[[step]]
+command = "cellfluid drain"
+expect.error = "The tank is empty"
+
+# Empty, the tank takes lava.
+[[step]]
+command = "cellfluid lava"
+expect.feedback = "Put 1000 mB of minecraft:lava in"
+
+# Nothing to read where there is no cell.
+[[step]]
+command = "cellfluid read 5 63 5"
+expect.error = "No cell there"

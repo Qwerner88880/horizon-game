@@ -31,8 +31,8 @@
 use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
     Multiblock, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
-    Transform, UsedBlock, block_entities, displays, energy, entities, item_hooks, items,
-    machine_recipes, menus, multiblocks, network, players, saved_data,
+    TankSpec, Transform, UsedBlock, block_entities, displays, energy, entities, fluids,
+    item_hooks, items, machine_recipes, menus, multiblocks, network, players, saved_data,
 };
 use std::collections::BTreeMap;
 
@@ -45,6 +45,33 @@ const CAPACITY: u64 = 100_000;
 const CORE_CHARGE: u64 = 10;
 /// Energy that may flow between two cells side by side each tick.
 const FLOW: u64 = 100;
+
+/// A cell's tank (capability `fluids`): 16 buckets. A cell keeps half a
+/// bucket and passes on what is above it, [`PIPE`] a tick, to the cells
+/// beside it, so a pour spreads out and settles.
+const TANK: u64 = 16_000;
+const KEEP: u64 = 500;
+const PIPE: u64 = 100;
+/// What `/cellfluid` puts in or takes out.
+const POUR: u64 = 1000;
+
+/// A fluid as a player types it: `water` is `minecraft:water`.
+fn fluid_name(word: &str) -> String {
+    if word.contains(':') {
+        word.to_owned()
+    } else {
+        format!("minecraft:{word}")
+    }
+}
+
+/// What the cell at a place holds in its tank, as text.
+fn tank_text(d: &str, x: i32, y: i32, z: i32) -> String {
+    match fluids::get(d, x, y, z).and_then(|t| t.into_iter().next()) {
+        Some(t) if t.amount > 0 => format!("{} {} / {} mB", t.fluid, t.amount, t.capacity),
+        Some(t) => format!("empty / {} mB", t.capacity),
+        None => "no tank".into(),
+    }
+}
 
 /// The mob `/sentinel` spawns (capability `entities`): an iron golem the mod
 /// calls `sentinel`. It takes a third of the damage a player's blow deals,
@@ -520,6 +547,13 @@ impl ServerMod for Cells {
                 .command_with("cellnet", [Argument::word("name").optional()])
                 .command_with("cellrecipes", [])
                 .command_with("sentinel", [])
+                .command_with(
+                    "cellfluid",
+                    [
+                        Argument::word("fluid").optional(),
+                        Argument::block_pos("pos").optional(),
+                    ],
+                )
                 .command_with("staff", []),
         ))
     }
@@ -557,6 +591,27 @@ impl ServerMod for Cells {
             }
             if items::get(d, x, y, z).is_none() {
                 let _ = items::set_slots(d, x, y, z, 2);
+            }
+            // A tank (capability `fluids`) that shares with the cells beside
+            // it, as the energy does.
+            if fluids::get(d, x, y, z).is_none() {
+                let _ = fluids::set_tanks(
+                    d,
+                    x,
+                    y,
+                    z,
+                    &[TankSpec {
+                        capacity: TANK,
+                        max_receive: POUR,
+                        max_extract: POUR,
+                    }],
+                );
+            }
+            if let Some(t) = fluids::get(d, x, y, z).and_then(|t| t.into_iter().next()) {
+                let share = t.amount.saturating_sub(KEEP).min(PIPE);
+                if share > 0 {
+                    fluids::push(d, x, y, z, 0, share);
+                }
             }
             // A machine recipe (capability `machine-recipes`) whose input
             // the cell holds: 1 item in, its first result out. The whole
@@ -688,6 +743,41 @@ impl ServerMod for Cells {
     ) -> Result<Option<String>, String> {
         if name == "cellrecipes" {
             return Ok(Some(format!("{} grinding recipes", self.recipes.len())));
+        }
+        if name == "cellfluid" {
+            // Capability `fluids`: `read` (or no word) reads the tank, `drain` takes a
+            // bucket out (and a bucket item, when the fluid has one, goes
+            // to the chat), any fluid name puts a bucket in.
+            let (x, y, z) = target(player, args);
+            let d = &player.dimension;
+            block_entities::get(d, x, y, z).ok_or("No cell there")?;
+            if fluids::get(d, x, y, z).is_none() {
+                return Err("The cell has no tank yet".into());
+            }
+            let word = args.string("fluid").unwrap_or("read");
+            if word == "read" {
+                return Ok(Some(format!("Cell at {x} {y} {z}: {}", tank_text(d, x, y, z))));
+            }
+            if word == "drain" {
+                return match fluids::extract(d, x, y, z, 0, POUR, false) {
+                    Some(out) => {
+                        let bucket = fluids::bucket_of_fluid(&out.fluid);
+                        Ok(Some(format!(
+                            "Took {} mB of {}{}",
+                            out.amount,
+                            out.fluid,
+                            bucket.map_or(String::new(), |b| format!(" ({b})"))
+                        )))
+                    }
+                    None => Err("The tank is empty".into()),
+                };
+            }
+            let fluid = fluid_name(word);
+            let put = fluids::insert(d, x, y, z, &fluid, POUR, false);
+            if put == 0 {
+                return Err(format!("The tank takes no {fluid}"));
+            }
+            return Ok(Some(format!("Put {put} mB of {fluid} in")));
         }
         if name == "sentinel" {
             // Capability `entities`: a mob of the mod, two blocks from the
@@ -1099,6 +1189,12 @@ horizon_mod_sdk::export_server_mod!(Cells);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fluids_are_named_the_way_players_type_them() {
+        assert_eq!(fluid_name("water"), "minecraft:water");
+        assert_eq!(fluid_name("cells:plasma"), "cells:plasma");
+    }
 
     #[test]
     fn a_sentinel_takes_a_third_of_a_blow() {

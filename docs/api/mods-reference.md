@@ -30,6 +30,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `item-hooks` | [`item-hooks`](#item-hooks) | act on the items it claims: their use and their blow, each tick held or worn, and data of its own on each stack |
 | `network` | [`network`](#network) | send messages to the other half of the mod, on the server or on your game, and hear its messages |
 | `entities` | [`entities`](#entities) | spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die |
+| `fluids` | [`fluids`](#fluids) | store fluids in its blocks and move fluids between any mod's blocks |
 
 ## World `horizon-mod`
 
@@ -49,14 +50,14 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `log`, `storage`, `players`, `world`
 - Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `server-events`
 
 ## World `block-entity-host`
 
 The game's side of `horizon-block-mod` beyond `horizon-server-mod`.
 
-- Imports (what the game offers): `block-entities`, `energy`, `items`
+- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `items`
 - Exports (what the mod provides): `block-entity-events`
 
 ## World `use-host`
@@ -816,6 +817,50 @@ Capability `energy`, server mods only (manifest `api = "0.3"`, experimental): en
 | `insert` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Puts up to `amount` in the buffer at a position, as far as its `max-receive` and room allow: what went in (0 where there is none). `simulate`: only says. |
 | `extract` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64, simulate: bool) -> u64` | Takes up to `amount` from the buffer at a position, as far as its `max-extract` and what it stores allow: what came out. |
 | `push` | `func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64` | Moves up to `amount` from the mod's own buffer at a position into the buffers on its six sides, shared evenly, each as far as it takes: what moved. |
+
+## `fluids`
+
+Access: capability `fluids`.
+
+Capability `fluids`, server mods only (manifest `api = "0.3"`, experimental): fluid tanks on block entities, shared by every mod (as energy is). A mod gives its own block entities up to eight tanks; any mod puts fluid in and takes it out, so one mod's pump feeds another's machine, and `push` moves fluid between neighbouring blocks like a pipe. Amounts are in millibuckets (a bucket is 1000). A tank holds one fluid at a time, named `namespace:path`: a vanilla one (`minecraft:water`) or the mod's own (`cells:plasma`; the game has no list of those, so only the name is checked). Tanks are saved with the world and go with their block entity (after its `removed`, which can still read them). Putting a vanilla fluid in the world and taking it out is the `world` capability's job: read the block, `set-blocks` it away, then `insert`.
+
+### record `tank`
+
+| Field | Type | |
+| --- | --- | --- |
+| `fluid` | `string` | `minecraft:water`; empty while the tank is. |
+| `amount` | `u64` |  |
+| `capacity` | `u64` |  |
+| `max-receive` | `u64` | The most `insert` puts in, and `extract` takes out, per call. |
+| `max-extract` | `u64` |  |
+
+### record `tank-spec`
+
+What a tank is made as.
+
+| Field | Type | |
+| --- | --- | --- |
+| `capacity` | `u64` |  |
+| `max-receive` | `u64` |  |
+| `max-extract` | `u64` |  |
+
+### record `fluid-stack`
+
+| Field | Type | |
+| --- | --- | --- |
+| `fluid` | `string` |  |
+| `amount` | `u64` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-tanks` | `func(dimension: string, x: s32, y: s32, z: s32, tanks: list<tank-spec>) -> result<_, string>` | Gives the mod's own block entity at a position tanks made as `tanks` (1 to 8, each up to 2^50 mB), or changes them: a tank that stays keeps what it holds up to its new capacity, one that goes loses it. An error where the mod has no block entity, or another mod keeps tanks. |
+| `get` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<list<tank>>` | The tanks at a position, whichever mod keeps them: none where there are none. |
+| `set` | `func(dimension: string, x: s32, y: s32, z: s32, tank: u32, fluid: option<string>, amount: u64) -> result<_, string>` | Sets what the mod's own tank `tank` holds, up to its capacity (none or 0 empties it). An error where the mod keeps no such tank, or for a name that is not `namespace:path`. |
+| `insert` | `func(dimension: string, x: s32, y: s32, z: s32, fluid: string, amount: u64, simulate: bool) -> u64` | Puts up to `amount` mB of `fluid` into the tanks at a position: into those holding it first, then into empty ones, each as far as its `max-receive` and room allow. What went in (0 where there are no tanks, or for a bad name). `simulate`: only says. |
+| `extract` | `func(dimension: string, x: s32, y: s32, z: s32, tank: u32, amount: u64, simulate: bool) -> option<fluid-stack>` | Takes up to `amount` mB from tank `tank` at a position, as far as its `max-extract` and what it holds allow: what came out, none for nothing. |
+| `push` | `func(dimension: string, x: s32, y: s32, z: s32, tank: u32, amount: u64) -> u64` | Moves up to `amount` mB from the mod's own tank `tank` at a position into the tanks on its six sides that take the fluid, shared evenly, each as far as it takes: what moved. |
+| `fluid-of-bucket` | `func(item: string) -> option<string>` | The fluid a vanilla bucket item holds (`minecraft:water_bucket` is `minecraft:water`, 1000 mB): none for any other item. |
+| `bucket-of-fluid` | `func(fluid: string) -> option<string>` | The vanilla bucket item that holds a fluid: none for any other fluid. |
 
 ## `items`
 

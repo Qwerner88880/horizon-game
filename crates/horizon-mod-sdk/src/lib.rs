@@ -222,6 +222,7 @@ pub mod server {
     pub use horizon::mods::displays::{self, Shape, Transform};
     pub use horizon::mods::energy::{self, Storage as EnergyStorage};
     pub use horizon::mods::entities::{self, Entity as ModEntity, SpawnOptions};
+    pub use horizon::mods::fluids::{self, FluidStack, Tank, TankSpec};
     pub use horizon::mods::item_hooks::{self, HeldStack};
     pub use horizon::mods::items::{self, Stack};
     pub use horizon::mods::machine_recipes;

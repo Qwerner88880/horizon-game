@@ -21,6 +21,8 @@ pub struct BlockEntities {
     mods: BTreeMap<String, BTreeMap<Key, Vec<u8>>>,
     /// Capability `energy`'s buffers on these block entities.
     pub energy: crate::energy::Buffers,
+    /// Capability `fluids`' tanks on them.
+    pub fluids: crate::fluids::Tanks,
     /// Capability `items`' inventories on them.
     pub items: crate::items::Inventories,
     /// Capability `multiblocks`' watches on them.
@@ -58,6 +60,7 @@ impl BlockEntities {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Self {
                 energy: crate::energy::Buffers::load(world),
+                fluids: crate::fluids::Tanks::load(world),
                 items: crate::items::Inventories::load(world),
                 multiblocks: crate::multiblocks::Watches::load(world),
                 saved_data: crate::saved_data::SavedData::load(world),
@@ -76,6 +79,7 @@ impl BlockEntities {
         };
         let mut out = Self {
             energy: crate::energy::Buffers::load(world),
+            fluids: crate::fluids::Tanks::load(world),
             items: crate::items::Inventories::load(world),
             multiblocks: crate::multiblocks::Watches::load(world),
             saved_data: crate::saved_data::SavedData::load(world),
@@ -96,6 +100,7 @@ impl BlockEntities {
     /// temporary file so a crash mid-write keeps the old one.
     pub fn save(&mut self, world: &Path) -> std::io::Result<()> {
         self.energy.save(world)?;
+        self.fluids.save(world)?;
         self.items.save(world)?;
         self.multiblocks.save(world)?;
         self.saved_data.save(world)?;

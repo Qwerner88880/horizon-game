@@ -134,9 +134,11 @@ pub enum Capability {
     /// Mobs of the mod's own: vanilla mobs it marks, steers, hurts and
     /// removes (server mods).
     Entities,
+    /// Fluid tanks on block entities, shared by every mod (server mods).
+    Fluids,
 }
 impl Capability {
-    pub const ALL: [Capability; 23] = [
+    pub const ALL: [Capability; 24] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -160,6 +162,7 @@ impl Capability {
         Capability::ItemHooks,
         Capability::Network,
         Capability::Entities,
+        Capability::Fluids,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's.
@@ -184,6 +187,7 @@ impl Capability {
                 | Capability::ItemHooks
                 | Capability::Network
                 | Capability::Entities
+                | Capability::Fluids
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -212,6 +216,7 @@ impl Capability {
             Capability::ItemHooks => "item-hooks",
             Capability::Network => "network",
             Capability::Entities => "entities",
+            Capability::Fluids => "fluids",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -234,6 +239,7 @@ impl Capability {
                 | Capability::ItemHooks
                 | Capability::Network
                 | Capability::Entities
+                | Capability::Fluids
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -274,6 +280,9 @@ impl Capability {
             }
             Capability::Network => {
                 "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::Fluids => {
+                "store fluids in its blocks and move fluids between any mod's blocks"
             }
             Capability::Entities => {
                 "spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die"
@@ -330,6 +339,7 @@ impl fmt::Display for Capability {
             Capability::ItemHooks => "item-hooks",
             Capability::Network => "network",
             Capability::Entities => "entities",
+            Capability::Fluids => "fluids",
         };
         f.write_str(name)
     }

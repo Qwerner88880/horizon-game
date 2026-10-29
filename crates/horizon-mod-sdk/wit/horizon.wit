@@ -742,6 +742,70 @@ interface energy {
     push: func(dimension: string, x: s32, y: s32, z: s32, amount: u64) -> u64;
 }
 
+/// Capability `fluids`, server mods only (manifest `api = "0.3"`,
+/// experimental): fluid tanks on block entities, shared by every mod (as
+/// energy is). A mod gives its own block entities up to eight tanks; any mod
+/// puts fluid in and takes it out, so one mod's pump feeds another's
+/// machine, and `push` moves fluid between neighbouring blocks like a pipe.
+/// Amounts are in millibuckets (a bucket is 1000). A tank holds one fluid at
+/// a time, named `namespace:path`: a vanilla one (`minecraft:water`) or the
+/// mod's own (`cells:plasma`; the game has no list of those, so only the name
+/// is checked). Tanks are saved with the world and go with their block
+/// entity (after its `removed`, which can still read them). Putting a
+/// vanilla fluid in the world and taking it out is the `world` capability's
+/// job: read the block, `set-blocks` it away, then `insert`.
+interface fluids {
+    record tank {
+        /// `minecraft:water`; empty while the tank is.
+        fluid: string,
+        amount: u64,
+        capacity: u64,
+        /// The most `insert` puts in, and `extract` takes out, per call.
+        max-receive: u64,
+        max-extract: u64,
+    }
+    /// What a tank is made as.
+    record tank-spec {
+        capacity: u64,
+        max-receive: u64,
+        max-extract: u64,
+    }
+    record fluid-stack {
+        fluid: string,
+        amount: u64,
+    }
+    /// Gives the mod's own block entity at a position tanks made as `tanks`
+    /// (1 to 8, each up to 2^50 mB), or changes them: a tank that stays keeps
+    /// what it holds up to its new capacity, one that goes loses it. An
+    /// error where the mod has no block entity, or another mod keeps tanks.
+    set-tanks: func(dimension: string, x: s32, y: s32, z: s32, tanks: list<tank-spec>) -> result<_, string>;
+    /// The tanks at a position, whichever mod keeps them: none where there
+    /// are none.
+    get: func(dimension: string, x: s32, y: s32, z: s32) -> option<list<tank>>;
+    /// Sets what the mod's own tank `tank` holds, up to its capacity (none or
+    /// 0 empties it). An error where the mod keeps no such tank, or for a
+    /// name that is not `namespace:path`.
+    set: func(dimension: string, x: s32, y: s32, z: s32, tank: u32, fluid: option<string>, amount: u64) -> result<_, string>;
+    /// Puts up to `amount` mB of `fluid` into the tanks at a position: into
+    /// those holding it first, then into empty ones, each as far as its
+    /// `max-receive` and room allow. What went in (0 where there are no
+    /// tanks, or for a bad name). `simulate`: only says.
+    insert: func(dimension: string, x: s32, y: s32, z: s32, fluid: string, amount: u64, simulate: bool) -> u64;
+    /// Takes up to `amount` mB from tank `tank` at a position, as far as its
+    /// `max-extract` and what it holds allow: what came out, none for
+    /// nothing.
+    extract: func(dimension: string, x: s32, y: s32, z: s32, tank: u32, amount: u64, simulate: bool) -> option<fluid-stack>;
+    /// Moves up to `amount` mB from the mod's own tank `tank` at a position
+    /// into the tanks on its six sides that take the fluid, shared evenly,
+    /// each as far as it takes: what moved.
+    push: func(dimension: string, x: s32, y: s32, z: s32, tank: u32, amount: u64) -> u64;
+    /// The fluid a vanilla bucket item holds (`minecraft:water_bucket` is
+    /// `minecraft:water`, 1000 mB): none for any other item.
+    fluid-of-bucket: func(item: string) -> option<string>;
+    /// The vanilla bucket item that holds a fluid: none for any other fluid.
+    bucket-of-fluid: func(fluid: string) -> option<string>;
+}
+
 /// Capability `items`, server mods only (manifest `api = "0.3"`,
 /// experimental): inventories on block entities, shared by every mod (as
 /// energy is). A mod gives its own block entities slots; any mod puts items
@@ -1419,6 +1483,7 @@ world horizon-block-mod {
     include horizon-server-mod;
     import block-entities;
     import energy;
+    import fluids;
     import menus;
     import displays;
     import items;
@@ -1441,6 +1506,7 @@ world horizon-block-mod {
 world block-entity-host {
     import block-entities;
     import energy;
+    import fluids;
     import items;
     export block-entity-events;
 }

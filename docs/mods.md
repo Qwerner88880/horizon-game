@@ -628,8 +628,62 @@ feeds another's machine. The `cells` example keeps its charge this way.
 - **Life.** A buffer goes with its block entity, after `removed` (which can
   still read it), and is saved with the world in `data/horizon/energy.json`.
 
-**Not yet.** Item energy (batteries in inventories), and item and fluid
-buffers on blocks.
+**Not yet.** Item energy (batteries in inventories).
+
+#### Fluids (capability `fluids`, experimental)
+
+Fluid tanks on block entities, shared by every mod as energy is: one mod's
+pump feeds another's machine, and `push` makes a block a pipe. Amounts are in
+millibuckets (a bucket is 1000). The `cells` example gives each lodestone a
+16-bucket tank (`/cellfluid [water|lava|drain|read] [pos]`) that keeps half a
+bucket and passes the rest on to the cells beside it.
+
+```rust
+use horizon_mod_sdk::server::{TankSpec, fluids};
+
+fluids::set_tanks(d, x, y, z, &[TankSpec {
+    capacity: 16_000, max_receive: 1000, max_extract: 1000,
+}])?;
+fluids::insert(d, x, y, z, "minecraft:water", 1000, false); // 1000 went in
+fluids::push(d, x, y, z, 0, 100); // tank 0 into the tanks beside it
+```
+
+- **Tanks.** `fluids::set_tanks` gives one of the mod's own block entities 1
+  to 8 tanks (capacity up to 2^50 mB, most in and out per call), or changes
+  them: a tank that stays keeps what it holds up to its new capacity. A tank
+  holds one fluid at a time, named `namespace:path`: a vanilla one
+  (`minecraft:water`, `minecraft:lava`) or the mod's own (`cells:plasma`).
+  The game keeps no list of a mod's own fluids, so only the name's shape is
+  checked. `set(tank, fluid, amount)` sets what the mod's own tank holds
+  (`None` or 0 empties it).
+- **Between mods.** `get` (all the tanks, `fluid` empty for an empty one),
+  `insert` and `extract` work on any mod's tanks, within their limits.
+  `insert` fills a tank that already holds the fluid before an empty one and
+  never mixes fluids; `extract` names the tank and returns the fluid and the
+  amount. `simulate` only says how much would move. `push(tank, amount)`
+  moves fluid from the mod's own tank into the tanks on its six sides that
+  take it, shared evenly, each as far as it takes: a pipe in one call. As
+  with energy, an `insert` or `push` changes the other mod's tank at once.
+- **Buckets.** `fluid_of_bucket(item)` and `bucket_of_fluid(fluid)` map the
+  vanilla buckets (water, lava, powder snow) to their fluids and back; a
+  bucket holds 1000 mB. A mod that fills and empties buckets does the item
+  side with `items` or `item-hooks`.
+- **The world's fluids.** Placing and taking a vanilla fluid in the world is
+  not a call of its own: a pump reads the block with `world::get_block`
+  (`minecraft:water[level=0]` is a source), removes it with `set_blocks` and
+  `insert`s a bucket's worth; a placer does the reverse.
+- **Life.** Tanks go with their block entity, after `removed` (which can
+  still read them), and are saved with the world in
+  `data/horizon/fluids.json`.
+
+Test scripts need nothing new: the mod's own commands and ticks show the
+tanks (the `cells` scenario `tests/fluids.toml` pours, flows, refuses a second
+fluid and drains).
+
+**Not yet.** Fluids in items (tanks on stacks, a bucket with a mod's fluid),
+vanilla pipes or hoppers seeing the tanks, fluids placed in the world as
+blocks of the mod's own fluid (a content mod can't declare a fluid yet), and
+showing a tank in a menu as a gauge.
 
 #### Menus (capability `menus`, experimental)
 

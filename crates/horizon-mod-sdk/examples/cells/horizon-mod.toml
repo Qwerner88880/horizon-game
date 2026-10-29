@@ -1,10 +1,10 @@
 id = "cells"
 name = "Energy Cells"
 version = "0.1.0"
-description = "Every lodestone a player places becomes an energy cell: an energy buffer any mod can fill or drain. It charges itself, shares its energy with the cells beside it and keeps it when the world is saved. It grinds cobblestone and andesite in its input slot into redstone (data/cells/recipe), and a ring of iron around it forms an energy core (data/cells/multiblock). /cell [pos] reads one; /cellgui [pos] opens its menu. /sentinel spawns an iron golem of the mod's own (capability entities): it takes a third of a blow, mends itself, answers a right click and says when it falls."
+description = "Every lodestone a player places becomes an energy cell: an energy buffer any mod can fill or drain. It charges itself, shares its energy with the cells beside it and keeps it when the world is saved. It grinds cobblestone and andesite in its input slot into redstone (data/cells/recipe), and a ring of iron around it forms an energy core (data/cells/multiblock). /cell [pos] reads one; /cellgui [pos] opens its menu. /sentinel spawns an iron golem of the mod's own (capability entities): it takes a third of a blow, mends itself, answers a right click and says when it falls. Each cell also has a 16-bucket fluid tank (capability fluids) that shares with the cells beside it: /cellfluid [water|lava|drain] [pos] reads, fills or drains it."
 authors = ["Horizon"]
 api = "0.3"
 side = "server"
-capabilities = ["players", "block-entities", "world", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks", "network", "entities"]
-experimental = ["block-entities", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks", "network", "entities"]
+capabilities = ["players", "block-entities", "world", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks", "network", "entities", "fluids"]
+experimental = ["block-entities", "energy", "menus", "displays", "items", "machine-recipes", "multiblocks", "saved-data", "item-hooks", "network", "entities", "fluids"]
 # A placed lodestone becomes a cell that charges each tick; /cell reads it; breaking it says what was lost.
