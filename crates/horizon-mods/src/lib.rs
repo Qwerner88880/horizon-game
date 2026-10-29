@@ -15,6 +15,7 @@ pub mod energy;
 pub mod fluids;
 #[cfg(feature = "index")]
 pub mod index;
+pub mod inter_mod;
 pub mod items;
 pub mod machine_recipes;
 pub mod manifest;

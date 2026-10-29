@@ -241,11 +241,26 @@ mod net_client_bindings {
         },
     });
 }
+/// Capability `inter-mod`'s world: its own, so server mods built before it
+/// (no `inter-mod-events` export) still load. The bus it talks over is
+/// [`crate::inter_mod::InterMod`], lent to every mod's store as one slot.
+mod inter_mod_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "inter-mod-host",
+    });
+}
+use inter_mod_bindings::{InterModHost, horizon::mods::inter_mod};
 use net_client_bindings::NetClientHost;
 use net_server_bindings::{NetServerHost, horizon::mods::network};
 /// Messages one hook call may send, and their bytes.
 const NET_MESSAGES_PER_CALL: u32 = 64;
 const NET_BYTES_PER_CALL: usize = 256 * 1024;
+/// Capability `inter-mod`'s bus, shared by every mod's store with the
+/// [`Mods`] that delivers, as the world and the stores are lent: one slot
+/// cloned into each `State`.
+pub type InterModSlot = Arc<Mutex<crate::inter_mod::InterMod>>;
+use crate::inter_mod::{Delivery, Message, Target};
 /// Capability `item-hooks`' world: its own, so server mods built before it
 /// (no `item-events` export) still load. `players` is the server world's.
 mod item_bindings {
@@ -844,6 +859,10 @@ struct Running {
     game_events: Option<GameEventsHost>,
     /// Capability `config`: the `config-events` export.
     config: Option<ConfigHost>,
+    /// Capability `inter-mod`: the `inter-mod-events` export. A mod with
+    /// the capability whose code was built without it has none: it hears
+    /// nothing, and `send-to` to it is an error.
+    inter_mod: Option<InterModHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -977,6 +996,13 @@ struct State {
     config_writes: u32,
     /// Messages and bytes this hook call has sent (reset per call).
     net_sent: (u32, usize),
+    /// Capability `inter-mod`: the bus every mod shares, the manifest's
+    /// `provides` as (api, version) pairs — `expose` takes no other — and
+    /// the messages and bytes this hook call has put on it (reset per
+    /// call).
+    inter_bus: InterModSlot,
+    provides: Vec<(String, String)>,
+    inter_sent: (u32, usize),
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -994,6 +1020,9 @@ pub struct Mods {
     player_items: PlayerSlot,
     /// Capability `entities`' lent mobs.
     mod_entities: EntityStateSlot,
+    /// Capability `inter-mod`'s bus: what the mods exposed, subscribed and
+    /// sent each other, delivered at the tick's end.
+    inter_bus: InterModSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -1732,6 +1761,70 @@ impl Mods {
                 .is_some_and(|r| r.net_server.is_some() || r.net_client.is_some())
         })
     }
+    /// Whether a running server mod hears other mods' messages (capability
+    /// `inter-mod`): only then is the tick's delivery worth a look.
+    pub fn wants_inter_mod(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.inter_mod.is_some()))
+    }
+    /// The messages server mods sent each other (capability `inter-mod`),
+    /// at the tick's end, after every other hook: in rounds, so a library's
+    /// answer reaches its asker within the same tick — a chain four hops
+    /// deep fits four rounds, and what the last round still leaves waits
+    /// for the next tick. Each message is one event call's fuel for the
+    /// hearing mod; a call that traps turns it off, as any other does.
+    pub fn inter_mod_tick(&mut self) {
+        if !self.wants_inter_mod() {
+            return;
+        }
+        if let Ok(mut bus) = self.inter_bus.lock() {
+            bus.begin_tick();
+        }
+        for _ in 0..crate::inter_mod::ROUNDS_PER_TICK {
+            let round = self
+                .inter_bus
+                .lock()
+                .map(|mut bus| bus.take_round())
+                .unwrap_or_default();
+            if round.is_empty() {
+                break;
+            }
+            self.deliver_inter_mod(round);
+        }
+    }
+    /// One round's messages, each to the mod it is for. Takes the messages
+    /// one by one: a mod that traps mid-round loses only its own rest.
+    fn deliver_inter_mod(&mut self, round: Vec<Delivery>) {
+        for m in round {
+            let Delivery {
+                to,
+                from,
+                channel,
+                data,
+            } = m;
+            let Some(i) = self.running_index(&to) else {
+                continue;
+            };
+            self.call(i, FUEL_EVENT, |run| match &run.inter_mod {
+                Some(h) => h.horizon_mods_inter_mod_events().call_message(
+                    &mut run.store,
+                    &from,
+                    &channel,
+                    &data,
+                ),
+                None => Ok(()),
+            });
+        }
+    }
+    /// Takes a stopped mod off the message bus: its exposes and
+    /// subscriptions go, with the messages waiting for it and the ones it
+    /// sent (capability `inter-mod`).
+    fn inter_forget(&mut self, id: &str) {
+        if let Ok(mut bus) = self.inter_bus.lock() {
+            bus.forget(id);
+        }
+    }
     /// `player` clicked slot `slot` of mod `mod_id`'s menu `menu`.
     pub fn menu_clicked(
         &mut self,
@@ -1983,35 +2076,53 @@ impl Mods {
         {
             *slot = Some(multiblocks);
         }
-        for path in paths {
-            let modified = modified(path);
+        // Every package read once, before any of them starts: the start
+        // order below needs every manifest. The entries themselves keep the
+        // paths' own order — the Mods page's rows and the commands'
+        // priority come from it.
+        let read: Vec<(Option<SystemTime>, Result<Package, String>)> = paths
+            .iter()
+            .map(|path| (modified(path), Package::read(path)))
+            .collect();
+        let on: Vec<bool> = read
+            .iter()
+            .map(|(_, p)| p.as_ref().map(|p| enabled(&p.manifest.id)).unwrap_or(false))
+            .collect();
+        let starts: Vec<bool> = (0..paths.len())
+            .map(|i| {
+                on[i]
+                    && read[i]
+                        .1
+                        .as_ref()
+                        .is_ok_and(|p| runs.starts(p.manifest.side))
+            })
+            .collect();
+        // Capability `inter-mod`: which mods may start, in which order
+        // (their needs' providers first), and which need is unmet.
+        let manifests: Vec<Option<&Manifest>> = read
+            .iter()
+            .map(|(_, p)| p.as_ref().ok().map(|p| &p.manifest))
+            .collect();
+        let (order, gate) = crate::inter_mod::start_order(&manifests, &starts, &on);
+        for (i, path) in paths.iter().enumerate() {
             let mut entry = Entry {
                 path: path.clone(),
                 manifest: None,
                 status: Status::Off,
                 cost: Duration::ZERO,
                 run: None,
-                modified,
+                modified: read[i].0,
             };
-            match Package::read(path) {
-                Err(e) => entry.status = Status::Failed(e),
+            match &read[i].1 {
+                Err(e) => entry.status = Status::Failed(e.clone()),
                 Ok(package) => {
-                    let on = enabled(&package.manifest.id);
                     entry.manifest = Some(package.manifest.clone());
-                    if on && !runs.starts(package.manifest.side) {
+                    if !on[i] {
+                        // Off: the player's choice.
+                    } else if !starts[i] {
                         entry.status = Status::Elsewhere;
-                    } else if on {
-                        // Content is read before the world loads; a mod whose
-                        // content is refused stays off, with the reason.
-                        let content = crate::Content::read(path, &package.manifest);
-                        entry.status =
-                            match content.and_then(|_| mods.start(path, &package, &reserved)) {
-                                Ok(run) => {
-                                    entry.run = run;
-                                    Status::Running
-                                }
-                                Err(e) => Status::Failed(e),
-                            };
+                    } else if let Some(reason) = &gate[i] {
+                        entry.status = Status::Failed(reason.clone());
                     }
                 }
             }
@@ -2019,6 +2130,30 @@ impl Mods {
                 log::warn!("Horizon: mod {} did not start: {reason}", m.id);
             }
             mods.entries.push(entry);
+        }
+        // Start, in the order the needs ask for: with none, the paths'
+        // own, as it always was. Content is read before the world loads; a
+        // mod whose content is refused stays off, with the reason.
+        for i in order {
+            let (path, package) = match &read[i].1 {
+                Ok(package) => (&paths[i], package),
+                Err(_) => continue,
+            };
+            let content = crate::Content::read(path, &package.manifest);
+            let status = match content.and_then(|_| mods.start(path, package, &reserved)) {
+                Ok(run) => {
+                    mods.entries[i].run = run;
+                    Status::Running
+                }
+                Err(e) => Status::Failed(e),
+            };
+            if let Status::Failed(reason) = &status {
+                log::warn!(
+                    "Horizon: mod {} did not start: {reason}",
+                    package.manifest.id
+                );
+            }
+            mods.entries[i].status = status;
         }
         mods
     }
@@ -2065,6 +2200,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             effects::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            inter_mod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -2109,6 +2246,7 @@ impl Mods {
         let multiblocks = self.multiblocks.clone();
         let player_items = self.player_items.clone();
         let mod_entities = self.mod_entities.clone();
+        let inter_bus = self.inter_bus.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -2184,6 +2322,15 @@ impl Mods {
             config: Default::default(),
             config_path,
             config_writes: 0,
+            inter_bus,
+            provides: m
+                .provides
+                .iter()
+                .filter_map(|e| {
+                    crate::manifest::api_of(e).map(|(n, v)| (n.to_owned(), v.to_owned()))
+                })
+                .collect(),
+            inter_sent: (0, 0),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -2332,6 +2479,21 @@ impl Mods {
             true => NetClientHost::new(&mut store, &instance).ok(),
             false => None,
         };
+        // `inter-mod-events`: a server mod built before the capability has
+        // no export and keeps working, hearing nothing of other mods.
+        let inter_mod_export = match server && m.capabilities.contains(&crate::Capability::InterMod)
+        {
+            true => InterModHost::new(&mut store, &instance).ok(),
+            false => None,
+        };
+        // The bus learns who hears messages: `send-to` promises the other
+        // mod gets it, so a mod that cannot (no export) must be an error,
+        // not a silent Ok.
+        if inter_mod_export.is_some()
+            && let Ok(mut bus) = self.inter_bus.lock()
+        {
+            bus.hears.insert(m.id.clone());
+        }
         self.generation += 1;
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
@@ -2352,6 +2514,7 @@ impl Mods {
             redstone: redstone_export,
             game_events: game_events_export,
             config: config_export,
+            inter_mod: inter_mod_export,
         }))
     }
 
@@ -2436,6 +2599,7 @@ impl Mods {
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         run.store.data_mut().item_writes = 0;
         run.store.data_mut().net_sent = (0, 0);
+        run.store.data_mut().inter_sent = (0, 0);
         run.store.data_mut().entity_spawns = 0;
         run.store.data_mut().effects_sent = 0;
         run.store.data_mut().config_writes = 0;
@@ -2461,12 +2625,14 @@ impl Mods {
                 let reason = reason(&e);
                 log::warn!("Horizon: mod {} stopped: {reason}", run.store.data().id);
                 let name = run.store.data().name.clone();
+                let id = run.store.data().id.clone();
                 self.out.push(Output::Stopped {
                     name,
                     reason: reason.clone(),
                 });
                 entry.status = Status::Failed(reason);
                 entry.run = None;
+                self.inter_forget(&id);
                 self.generation += 1;
                 None
             }
@@ -2958,7 +3124,14 @@ impl Mods {
             any = true;
             self.generation += 1;
             self.entries[i].modified = now;
+            let id = self.entries[i].manifest.as_ref().map(|m| m.id.clone());
             self.entries[i].run = None;
+            // The bus forgets the mod as it stops; a restart's `init`
+            // exposes and subscribes again (the start order and the gates
+            // stay as the load left them).
+            if let Some(id) = id {
+                self.inter_forget(&id);
+            }
             let path = self.entries[i].path.clone();
             let started = Package::read(&path).and_then(|p| {
                 self.entries[i].manifest = Some(p.manifest.clone());
@@ -3657,6 +3830,108 @@ impl network::Host for State {
             channel,
             data,
         });
+        Ok(())
+    }
+}
+impl inter_mod::Host for State {
+    fn expose(&mut self, name: String, version: String) -> Result<(), String> {
+        if !self.server {
+            return Err("only server mods share APIs with each other".into());
+        }
+        if !self
+            .provides
+            .iter()
+            .any(|(n, v)| *n == name && *v == version)
+        {
+            return Err(format!(
+                "{name}@{version} is not in the manifest's provides"
+            ));
+        }
+        let mut bus = self.inter_bus.lock().map_err(|_| "the bus is gone")?;
+        bus.expose(&self.id, &name, &version)
+    }
+    fn providers(&mut self, name: String) -> Vec<inter_mod::Provider> {
+        let Ok(bus) = self.inter_bus.lock() else {
+            return Vec::new();
+        };
+        bus.providers(&name)
+            .into_iter()
+            .map(|(mod_id, version)| inter_mod::Provider { mod_id, version })
+            .collect()
+    }
+    fn subscribe(&mut self, channel: String) -> Result<(), String> {
+        if !self.server {
+            return Err("only server mods hear other mods".into());
+        }
+        if !horizon_protocol_name_ok(&channel) {
+            return Err(format!("channel {channel:?} is not [a-z0-9_./-]{{1,64}}"));
+        }
+        let mut bus = self.inter_bus.lock().map_err(|_| "the bus is gone")?;
+        bus.subscribe(&self.id, &channel)
+    }
+    fn publish(&mut self, channel: String, data: Vec<u8>) -> Result<(), String> {
+        self.inter_send(None, channel, data)
+    }
+    fn send_to(&mut self, mod_id: String, channel: String, data: Vec<u8>) -> Result<(), String> {
+        if mod_id == self.id {
+            return Err("a mod cannot send to itself".into());
+        }
+        self.inter_send(Some(mod_id), channel, data)
+    }
+}
+impl State {
+    /// One more message on the bus, within the call's caps: the same
+    /// channel rule and size as `network`'s, and a per-call budget of its
+    /// own, so a loop of sends costs more than fuel alone.
+    fn inter_send(
+        &mut self,
+        to: Option<String>,
+        channel: String,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        if !self.server {
+            return Err("only server mods message each other".into());
+        }
+        if !horizon_protocol_name_ok(&channel) {
+            return Err(format!("channel {channel:?} is not [a-z0-9_./-]{{1,64}}"));
+        }
+        if data.len() > NET_MAX_DATA {
+            return Err(format!("{} bytes: at most {NET_MAX_DATA}", data.len()));
+        }
+        let (n, bytes) = self.inter_sent;
+        if n >= crate::inter_mod::MESSAGES_PER_CALL
+            || bytes + data.len() > crate::inter_mod::BYTES_PER_CALL
+        {
+            return Err("too many messages in one call".into());
+        }
+        let mut bus = self.inter_bus.lock().map_err(|_| "the bus is gone")?;
+        if let Some(to) = &to
+            && !bus.hears.contains(to)
+        {
+            return Err(format!(
+                "mod {to} is not running, or runs without the inter-mod-events export"
+            ));
+        }
+        let from = self.id.clone();
+        let size = data.len();
+        let message = Message {
+            from,
+            target: match to {
+                Some(to) => Target::Mod(to),
+                None => Target::Channel,
+            },
+            channel,
+            data,
+        };
+        // Past a mod's waiting caps the message is dropped, said in the
+        // log: the send itself is not an error.
+        if !bus.push(message) {
+            log::warn!(
+                "Horizon: mod {}'s message was dropped: too many waiting",
+                self.id
+            );
+        }
+        self.inter_sent = (n + 1, bytes + size);
         Ok(())
     }
 }
