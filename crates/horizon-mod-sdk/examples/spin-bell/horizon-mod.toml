@@ -1,0 +1,10 @@
+id = "spin_bell"
+name = "Spin Bell"
+version = "0.1.0"
+description = "The consumer half of the spin pair (capability inter-mod): requires spin-lib@1, publishes a counter on spin/tick each tick and rings at the first angle the library answers on spin/angle. Alone it stays off: needs spin-lib@1. /spin-self sends to its own id, which the API refuses."
+authors = ["Horizon"]
+api = "0.3"
+side = "server"
+capabilities = ["inter-mod", "players"]
+experimental = ["inter-mod"]
+requires = ["spin-lib@1"]

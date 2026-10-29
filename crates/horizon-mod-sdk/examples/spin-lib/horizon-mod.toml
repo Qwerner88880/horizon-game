@@ -1,0 +1,10 @@
+id = "spin_lib"
+name = "Spin Lib"
+version = "0.1.0"
+description = "A library mod (capability inter-mod): exposes spin-lib 1.0, answers a counter on spin/tick with the angle it stands for on spin/angle. /spin-flood publishes 65 messages at once to show the per-call cap."
+authors = ["Horizon"]
+api = "0.3"
+side = "server"
+capabilities = ["inter-mod", "players"]
+experimental = ["inter-mod"]
+provides = ["spin-lib@1.0"]

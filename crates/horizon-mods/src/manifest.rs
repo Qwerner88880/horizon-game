@@ -696,7 +696,12 @@ pub fn componentize(core: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("{e:#}"))
 }
 
-/// The names a component imports: `horizon:mods/game@0.1.0`, ...
+/// The names a component imports: `horizon:mods/game@0.1.0`, ... Only the
+/// interfaces whose functions the component takes: an interface with none
+/// of them — the shape an exported interface's shared types leave in a
+/// component (`item-events` uses `item-hooks`' `held-stack`) — asks for no
+/// capability, as the game's own load has it (a capability is what a mod
+/// calls).
 #[cfg(feature = "pack")]
 pub fn component_imports(component: &[u8]) -> Result<Vec<String>, String> {
     use wit_parser::{WorldItem, WorldKey};
@@ -708,11 +713,18 @@ pub fn component_imports(component: &[u8]) -> Result<Vec<String>, String> {
     let names = resolve.worlds[world]
         .imports
         .iter()
-        .map(|(key, item)| match (key, item) {
-            (WorldKey::Interface(id), _) | (_, WorldItem::Interface { id, .. }) => resolve
-                .id_of(*id)
-                .unwrap_or_else(|| resolve.name_world_key(key)),
-            _ => resolve.name_world_key(key),
+        .filter_map(|(key, item)| {
+            if let WorldItem::Interface { id, .. } = item
+                && resolve.interfaces[*id].functions.is_empty()
+            {
+                return None;
+            }
+            Some(match (key, item) {
+                (WorldKey::Interface(id), _) | (_, WorldItem::Interface { id, .. }) => resolve
+                    .id_of(*id)
+                    .unwrap_or_else(|| resolve.name_world_key(key)),
+                _ => resolve.name_world_key(key),
+            })
         });
     Ok(names.collect())
 }

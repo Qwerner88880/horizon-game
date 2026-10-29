@@ -1,0 +1,12 @@
+# The consumer half of the spin pair: this script runs with spin-lib beside it
+# (the sandbox loads both; alone the mod stays off — needs spin-lib@1). A tick's
+# publish is answered within the same tick, in rounds; /spin-self is refused.
+
+[[step]]
+join = "Alex"
+ticks = 2
+expect.broadcast = ["spin-lib 1.0 on", "spin-lib 1.0 from spin_lib", "spin at 90°"]
+
+[[step]]
+command = "spin-self"
+expect.error = "a mod cannot send to itself"

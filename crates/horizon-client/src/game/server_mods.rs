@@ -1068,6 +1068,9 @@ mod run {
             let live = std::mem::take(&mut self.mods.entity_live);
             self.mods.mods.entity_tick(self.ticks, &live);
             self.mod_items_tick(&players);
+            // Capability `inter-mod`: the mods' messages to each other, at
+            // the tick's end — every other hook's sends are in by now.
+            self.mods.mods.inter_mod_tick();
             self.sync_mod_displays(None);
             self.return_world();
             self.refresh_mod_menus(None);

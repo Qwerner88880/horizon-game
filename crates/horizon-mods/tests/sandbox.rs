@@ -49,6 +49,10 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "beacons",
                 "-p",
+                "spin-lib",
+                "-p",
+                "spin-bell",
+                "-p",
                 "cells",
                 "-p",
                 "cells-ui",
@@ -77,6 +81,8 @@ fn mods_dir() -> &'static Path {
             ("predator_missile", example("predator-missile")),
             ("welcome", example("welcome")),
             ("beacons", example("beacons")),
+            ("spin_lib", example("spin-lib")),
+            ("spin_bell", example("spin-bell")),
             ("cells", example("cells")),
             ("cells_ui", example("cells-ui")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
@@ -247,7 +253,7 @@ fn undeclared_capabilities_are_refused() {
 /// from the functions they import.
 #[test]
 fn a_mod_for_a_newer_horizon_is_refused() {
-    use horizon_mods::api_level::{imports, needed};
+    use horizon_mods::api_level::{LEVEL, imports, needed};
     use wit_parser::{ManglingAndAbi, Resolve};
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let wit = std::fs::read_to_string(root.join("crates/horizon-mod-sdk/wit/horizon.wit"))
@@ -302,6 +308,9 @@ experimental = ["ui", "render", "input", "recipes", "network"]
     // Cells keeps block entities (`block-entities.get`, `.set`); the level
     // below this Horizon's belongs to `inter-mod`'s functions.
     assert_eq!(level("cells.hmod"), 23);
+    // The spin pair talks between mods (`inter-mod.expose`, `publish`...).
+    assert_eq!(level("spin_lib.hmod"), LEVEL);
+    assert_eq!(level("spin_bell.hmod"), LEVEL);
     // A server mod built since needs them only when it calls them.
     assert_eq!(level("beacons.hmod"), 4);
 }
@@ -931,10 +940,14 @@ capabilities = ["registries"]
 fn the_examples_test_scripts_pass() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../horizon-mod-sdk/examples");
     let mut ran = 0;
+    // spin-bell's scripts run with its library beside it
+    // (a_library_mod_and_its_consumer_talk): alone it stays off, its
+    // `requires` unmet.
     let examples_and_files = [
         ("coords-hud", "coords_hud"),
         ("welcome", "welcome"),
         ("beacons", "beacons"),
+        ("spin-lib", "spin_lib"),
         ("cells", "cells"),
         ("cells-ui", "cells_ui"),
     ];
@@ -949,7 +962,41 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 17);
+    assert_eq!(ran, 18);
+}
+
+/// Capability `inter-mod`: a library mod and the mod that needs it talk,
+/// and the version gate keeps the consumer off without its library.
+#[test]
+fn a_library_mod_and_its_consumer_talk() {
+    // Alone, the consumer never starts: no turned-on mod provides its need.
+    let alone = Mods::load(&[mods_dir().join("spin_bell.hmod")], |_| true, |_| false);
+    let Status::Failed(reason) = &alone.entries()[0].status else {
+        panic!(
+            "alone, the consumer started: {:?}",
+            alone.entries()[0].status
+        );
+    };
+    assert!(
+        reason.contains("needs spin-lib@1; no turned-on mod provides it"),
+        "{reason}"
+    );
+    // Together, the library starts first and the pair talks within a tick:
+    // the consumer's path comes first, its need decides the order.
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../horizon-mod-sdk/examples/spin-bell/tests/spin.toml"),
+    )
+    .unwrap();
+    let script = Script::parse(&script).unwrap();
+    let mut game = TestGame::load_pair(
+        &mods_dir().join("spin_bell.hmod"),
+        &mods_dir().join("spin_lib.hmod"),
+    )
+    .unwrap();
+    script
+        .run(&mut game)
+        .unwrap_or_else(|e| panic!("spin.toml: {e}"));
 }
 
 /// Capability `world` without a world lent (the registry's trial run):

@@ -1359,6 +1359,74 @@ cannot ask the game for the ids of its own declared blocks — it is the
 author of `data/<id>/horizon/block/`, so it knows them, and a claim naming
 a block nobody declares simply never fires.
 
+#### Library mods and messages between mods (capability `inter-mod`, experimental)
+
+Server mods message each other, so the code one mod carries can serve them
+all — what modding platforms call a library (a BrandonsCore, a Curios, a
+GeckoLib): written once, declared in a manifest, started before whoever
+needs it. A message is bytes on a channel of the sending mod's own naming
+and format, exactly `network`'s, and never leaves the game that simulates
+the world: nothing of this goes over the wire, so a vanilla client and a
+vanilla server see nothing of it.
+
+```toml
+# the library                            # the mod that needs it
+api = "0.3"                              api = "0.3"
+side = "server"                          side = "server"
+capabilities = ["inter-mod", "players"]  capabilities = ["inter-mod", "players"]
+experimental = ["inter-mod"]             experimental = ["inter-mod"]
+provides = ["spin-lib@1.0"]              requires = ["spin-lib@1"]
+```
+
+- **Provides and requires.** The game starts providers before the mods
+  that need them (with no `requires`, the load order is the mods' own, as
+  always), and keeps a mod off, with the reason on its Mods page row,
+  whose need no turned-on mod provides: "needs spin-lib@1; no turned-on
+  mod provides it". A need is served by the same name and the same major
+  version at least as new — `1` takes any `1.x`, `1.2` takes `1.2` and
+  later in the 1 line, and `2` never serves `1`; a circle of requires
+  keeps them all off, named as such. The gate looks at turned-on mods
+  wherever they run, so a server mod pair both on passes it in the
+  window's game too.
+- **The bus.** `inter_mod::expose(name, version)` registers the mod as
+  serving an API — one entry of its manifest's `provides`, checked — and
+  `inter_mod::providers(name)` lists who serves it, their ids and
+  versions, as of the call; a library turned off is not in it. At most 8
+  APIs a mod. `inter_mod::subscribe(channel)` hears a channel (at most 16
+  a mod), `inter_mod::publish(channel, data)` reaches every other mod
+  subscribed to it, and `inter_mod::send_to(mod_id, channel, data)`
+  reaches one running mod however it gets the channel — which must hear
+  messages (a send to a mod without the `inter-mod-events` export, or to
+  itself, is an error). Channels are `[a-z0-9_./-]` up to 64 characters,
+  messages up to 30,000 bytes, 64 messages (256 KiB) a call.
+- **Delivery.** Messages wait for the end of the server's tick, then go
+  out in rounds: an answer a library sends while hearing a message is
+  delivered by the next round of the same tick, so a request and its
+  answer fit one tick, four hops deep. A mod is handed at most 64 messages
+  (512 KiB) a tick — the rest wait for the next one — and never a message
+  it sent itself. A mod that stops, or is reloaded, is taken off the bus:
+  its exposures and subscriptions go, and it re-exposes and re-subscribes
+  as it starts again; nothing of the bus is saved with the world.
+- **Hearing.** `ServerMod::message(from, channel, data)` is the call, with
+  the sender's id. **A mod must not trust what another mod sends**: the
+  bus carries bytes between mods that chose to talk, and a broken or
+  hostile mod on the same server can send anything — check every message,
+  as the server must what a client sends (`network`'s rule).
+
+The `spin-lib` and `spin-bell` examples are the pair: the library exposes
+`spin-lib` at `1.0` and answers a counter on `spin/tick` with the angle it
+stands for on `spin/angle`; the consumer requires `spin-lib@1`, publishes
+its counter each tick and rings at the first answer — within the same
+tick, by the rounds. Alone, spin-bell stays off with its reason; its test
+script runs only beside the library (`TestGame::load_pair` in the
+sandbox).
+
+**Not yet.** A typed import of a library's own interface (component
+composition, the consumer calling the library's functions directly); a
+synchronous call (a question that blocks for its answer — the rounds
+deliver within the tick instead); client mods on the bus (they have
+`network`); asking the bus what channels exist.
+
 ## Publish your mod
 
 Horizon's registry lists mods, modpacks (`.hpack`) and resource packs made for Horizon, each reviewed before it is

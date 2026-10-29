@@ -227,16 +227,22 @@ pub fn default_player() -> Player {
     }
 }
 
+/// A fresh scratch folder for a [`TestGame`]: every load, single or pair,
+/// takes its own, numbered from one counter so two games never share one.
+fn scratch_dir() -> PathBuf {
+    static RUN: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "horizon-mod-test-{}-{}",
+        std::process::id(),
+        RUN.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 impl TestGame {
     /// Starts the mod at `hmod`, as the game would with it turned on. Errs
     /// when it doesn't start, with the game's reason.
     pub fn load(hmod: &Path) -> Result<TestGame, String> {
-        static RUN: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-mod-test-{}-{}",
-            std::process::id(),
-            RUN.fetch_add(1, Ordering::Relaxed)
-        ));
+        let dir = scratch_dir();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
@@ -270,20 +276,74 @@ impl TestGame {
     }
 
     fn start(&mut self) -> Result<(), String> {
+        self.start_paths(std::slice::from_ref(&self.hmod.clone()))
+    }
+
+    /// Starts the mods at `paths` together in one sandbox, their library
+    /// (the one others `requires`) first, as the game starts them. Errs
+    /// when the first one doesn't start, with the game's reason.
+    fn start_paths(&mut self, paths: &[PathBuf]) -> Result<(), String> {
         let recipes = machine_recipes_of(&self.hmod);
         let multiblocks = multiblocks_of(&self.hmod);
-        self.mods = Mods::load_for(
-            Runs::Both,
-            std::slice::from_ref(&self.hmod),
-            |_| true,
-            |_| false,
-            recipes,
-            multiblocks,
-        );
+        self.mods = Mods::load_for(Runs::Both, paths, |_| true, |_| false, recipes, multiblocks);
         match &self.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
             _ if !self.mods.is_running() => Err("the mod has no code to run".into()),
             _ => Ok(()),
+        }
+    }
+
+    /// Starts two mods together, a library and the mod that needs it
+    /// (capability `inter-mod`): the library first, whichever order they
+    /// are given in, into one scratch copy the pair shares. Errs when
+    /// either doesn't start. Their scripts run on it as on one game; a
+    /// `reload` step reloads the first mod only, and one recipes table is
+    /// built, from the first of the two that carries one.
+    pub fn load_pair(a: &Path, b: &Path) -> Result<TestGame, String> {
+        let dir = scratch_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let copy_a = dir.join(a.file_name().unwrap_or("mod.hmod".as_ref()));
+        let copy_b = dir.join(b.file_name().unwrap_or("mod.hmod".as_ref()));
+        copy_mod(a, &copy_a)?;
+        copy_mod(b, &copy_b)?;
+        let mut game = TestGame {
+            mods: Mods::default(),
+            hmod: copy_a.clone(),
+            dir,
+            player: Some(default_player()),
+            clock: Some(Clock {
+                game_time: 0,
+                day_time: 0,
+            }),
+            players: Vec::new(),
+            names: Vec::new(),
+            tick: 0,
+            world: Default::default(),
+            block_entities: Default::default(),
+            stacks: Default::default(),
+            entities: Vec::new(),
+            displays: Vec::new(),
+            entity_takes_use: Default::default(),
+            entity_next: 1000,
+            entity_died: Vec::new(),
+            entity_removed: Vec::new(),
+            entity_lent: false,
+            redstone_in: Default::default(),
+        };
+        game.start_paths(&[copy_a, copy_b])?;
+        let failed = game
+            .mods
+            .entries()
+            .iter()
+            .find(|e| matches!(e.status, Status::Failed(_)))
+            .map(|e| match &e.status {
+                Status::Failed(reason) => format!("the mod didn't start: {reason}"),
+                _ => unreachable!("found only Failed above"),
+            });
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(game),
         }
     }
 
@@ -324,6 +384,9 @@ impl TestGame {
             self.mods.config_tick(self.tick);
             self.entities_tick();
             self.items_tick();
+            // Capability `inter-mod`: the mods' messages to each other, as
+            // the game's tick delivers them, at its end.
+            self.mods.inter_mod_tick();
         }
     }
     /// Lends the mobs to the mods for the calls until

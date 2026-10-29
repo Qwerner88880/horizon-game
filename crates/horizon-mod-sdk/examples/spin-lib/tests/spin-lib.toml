@@ -1,0 +1,11 @@
+# A library mod on its own: it exposes spin-lib 1.0 (said back over the bus), hears a
+# channel nobody publishes to, and /spin-flood shows the per-call cap of 64 messages.
+
+[[step]]
+join = "Alex"
+ticks = 2
+expect.broadcast = ["spin-lib 1.0 on"]
+
+[[step]]
+command = "spin-flood"
+expect.feedback = "sent 64, 1 refused"
