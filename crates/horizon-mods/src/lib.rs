@@ -17,6 +17,7 @@ pub mod items;
 pub mod machine_recipes;
 pub mod manifest;
 pub mod modpack;
+pub mod multiblocks;
 #[cfg(feature = "runtime")]
 mod runtime;
 #[cfg(feature = "runtime")]
