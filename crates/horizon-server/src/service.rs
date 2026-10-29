@@ -105,7 +105,11 @@ fn xml(text: &str) -> String {
 
 /// A launchd agent: started at login, and again if the supervisor exits with an error.
 pub fn launchd_plist(label: &str, program: &Path, dir: &Path) -> String {
-    let log = dir.join("logs/supervisor.log");
+    // launchd reads this on macOS: the path inside is POSIX whatever wrote it.
+    let log = dir
+        .join("logs/supervisor.log")
+        .to_string_lossy()
+        .replace('\\', "/");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -140,7 +144,7 @@ pub fn launchd_plist(label: &str, program: &Path, dir: &Path) -> String {
 "#,
         program = xml(&program.display().to_string()),
         dir = xml(&dir.display().to_string()),
-        log = xml(&log.display().to_string()),
+        log = xml(&log),
     )
 }
 
