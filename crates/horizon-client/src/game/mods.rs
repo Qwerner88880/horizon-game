@@ -97,6 +97,13 @@ pub(super) struct ModsState {
     pub(super) entity_live: Vec<horizon_mods::EntityInfo>,
     #[cfg(feature = "mods")]
     pub(super) entity_kinds: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    /// Capability `redstone`: the tick the signals around the mods' blocks
+    /// were last read, and the world and dimension `Game::mod_emitters` is
+    /// of.
+    #[cfg(feature = "mods")]
+    pub(super) redstone_fed: u64,
+    #[cfg(feature = "mods")]
+    pub(super) emitters_key: Option<(std::path::PathBuf, String)>,
     /// Capability `items`: stacks to drop, by dimension, made in that level;
     /// and every item's stack size, for the mods' inventories.
     #[cfg(feature = "mods")]
@@ -796,6 +803,7 @@ impl Game<'_> {
                 | Output::PushEntity { .. }
                 | Output::SetEntityHealth { .. }
                 | Output::RemoveEntity { .. }
+                | Output::RedstoneOutput { .. }
                 | Output::SetMenuItems { .. }
                 | Output::CloseMenu { .. }
                 | Output::ShowDisplay { .. }

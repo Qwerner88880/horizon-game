@@ -1,0 +1,56 @@
+# Capability redstone: a cell gives out a signal of its charge on every face,
+# a level for each 1000 FE (a gauge for vanilla redstone), and stops charging
+# while a signal reaches its top face.
+
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+# Its first tick: 5 FE, no level yet, so no signal.
+[[step]]
+ticks = 1
+expect.redstone = []
+
+# Fill puts 1000 FE in; the next tick gives the gauge its first level.
+[[step]]
+command = "cellgui"
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+
+[[step]]
+ticks = 1
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1010 / 100000 FE"
+expect.redstone = ["0 63 0 1 1 1 1 1 1"]
+
+# A signal of 15 on its top face (a lever on top of it). The mod is told
+# after its tick, so this tick still charges; the next ones don't.
+[[step]]
+signals = [{ x = 0, y = 63, z = 0, side = "up", power = 15 }]
+ticks = 1
+
+[[step]]
+ticks = 10
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1015 / 100000 FE"
+
+# The signal goes away: told after the tick again, so charging starts with
+# the next one.
+[[step]]
+signals = [{ x = 0, y = 63, z = 0, side = "up", power = 0 }]
+ticks = 1
+
+[[step]]
+ticks = 2
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1025 / 100000 FE"
+expect.redstone = ["0 63 0 1 1 1 1 1 1"]
+
+# The signal goes with its block.
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+expect.redstone = []

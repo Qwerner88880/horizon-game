@@ -136,9 +136,12 @@ pub enum Capability {
     Entities,
     /// Fluid tanks on block entities, shared by every mod (server mods).
     Fluids,
+    /// Redstone for the mod's own blocks: read the signals around them, give
+    /// signals out (server mods).
+    Redstone,
 }
 impl Capability {
-    pub const ALL: [Capability; 24] = [
+    pub const ALL: [Capability; 25] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -163,6 +166,7 @@ impl Capability {
         Capability::Network,
         Capability::Entities,
         Capability::Fluids,
+        Capability::Redstone,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's.
@@ -188,6 +192,7 @@ impl Capability {
                 | Capability::Network
                 | Capability::Entities
                 | Capability::Fluids
+                | Capability::Redstone
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -217,6 +222,7 @@ impl Capability {
             Capability::Network => "network",
             Capability::Entities => "entities",
             Capability::Fluids => "fluids",
+            Capability::Redstone => "redstone",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -240,6 +246,7 @@ impl Capability {
                 | Capability::Network
                 | Capability::Entities
                 | Capability::Fluids
+                | Capability::Redstone
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -280,6 +287,9 @@ impl Capability {
             }
             Capability::Network => {
                 "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::Redstone => {
+                "read the redstone signals around its blocks and give redstone signals out of them"
             }
             Capability::Fluids => {
                 "store fluids in its blocks and move fluids between any mod's blocks"
@@ -340,6 +350,7 @@ impl fmt::Display for Capability {
             Capability::Network => "network",
             Capability::Entities => "entities",
             Capability::Fluids => "fluids",
+            Capability::Redstone => "redstone",
         };
         f.write_str(name)
     }

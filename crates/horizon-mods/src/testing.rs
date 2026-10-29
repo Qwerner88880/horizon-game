@@ -53,6 +53,10 @@ pub struct TestGame {
     entity_removed: Vec<crate::EntityInfo>,
     /// A step has lent the mobs for the calls of its parts.
     entity_lent: bool,
+    /// The signals a script put on blocks of the Overworld (capability
+    /// `redstone`): what the block there reads on each face, as the game
+    /// would read it from the neighbours.
+    pub redstone_in: std::collections::BTreeMap<(i32, i32, i32), crate::redstone::Sides>,
 }
 
 /// The vanilla mobs a test's mods may spawn.
@@ -237,6 +241,7 @@ impl TestGame {
             entity_died: Vec::new(),
             entity_removed: Vec::new(),
             entity_lent: false,
+            redstone_in: Default::default(),
         };
         copy_mod(hmod, &copy)?;
         game.start()?;
@@ -309,6 +314,29 @@ impl TestGame {
             kinds: std::sync::Arc::new(TEST_MOBS.iter().map(|k| (*k).to_owned()).collect()),
             entities: self.entities.clone(),
         });
+    }
+    /// What the game does before it calls a redstone mod: reads the signals
+    /// around each of its block entities (here, the ones a script set; zero
+    /// elsewhere) into the store.
+    fn feed_redstone(&mut self) {
+        for id in self.mods.redstone_mods() {
+            let keys: Vec<crate::block_entities::Key> = self
+                .block_entities
+                .of(&id)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in keys {
+                let [x, y, z] = key.1;
+                let read = match key.0.as_str() {
+                    "minecraft:overworld" => self.redstone_in.get(&(x, y, z)).copied(),
+                    _ => None,
+                };
+                self.block_entities
+                    .redstone
+                    .inputs
+                    .insert(key, read.unwrap_or([0; 6]));
+            }
+        }
     }
     /// Takes the mobs back and applies what the mods did to them, as the game
     /// does after its calls.
@@ -950,6 +978,20 @@ pub struct ClickSet {
     shift: bool,
 }
 
+/// A signal on one face of a block of the Overworld (capability
+/// `redstone`), as the block there reads it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalSet {
+    x: i32,
+    y: i32,
+    z: i32,
+    /// `down`, `up`, `north`, `south`, `west` or `east`.
+    side: String,
+    /// 0 to 15; 0 takes the signal away.
+    power: u8,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockSet {
@@ -1092,6 +1134,10 @@ pub struct Step {
     /// `world`); every other block is air.
     #[serde(default)]
     blocks: Vec<BlockSet>,
+    /// Signals the blocks read on a face (capability `redstone`), before the
+    /// rest of the step and standing until another step changes them.
+    #[serde(default)]
+    signals: Vec<SignalSet>,
     #[serde(default)]
     expect: Expect,
 }
@@ -1113,6 +1159,10 @@ pub struct Expect {
     /// The mod's screen after the step, as [`TestGame::screen_lines`]
     /// shows it; `[]` for no screen open.
     screen: Option<Vec<String>>,
+    /// What the mods' blocks give out after the step (capability
+    /// `redstone`), as `x y z down up north south west east`, with ` strong`
+    /// after it for a strong signal, ordered by place.
+    redstone: Option<Vec<String>>,
     /// The mods' mobs after the step (capability `entities`), as
     /// `tag kind x y z hp=health`, ordered by id; a dying one ends `dying`.
     entities: Option<Vec<String>>,
@@ -1261,6 +1311,19 @@ impl Step {
         }
         game.mods
             .lend_world(Box::new(ScriptWorld(game.world.clone())));
+        for s in &self.signals {
+            let face = ["down", "up", "north", "south", "west", "east"]
+                .iter()
+                .position(|n| *n == s.side)
+                .ok_or_else(|| {
+                    format!("{:?} is not a face (down up north south west east)", s.side)
+                })?;
+            if s.power > 15 {
+                return Err(format!("a signal is 0 to 15, not {}", s.power));
+            }
+            game.redstone_in.entry((s.x, s.y, s.z)).or_default()[face] = s.power;
+        }
+        game.feed_redstone();
         let store = std::mem::take(&mut game.block_entities);
         game.mods.lend_block_entities(store);
         game.mods.lend_player_items(Box::new(ScriptItems {
@@ -1527,6 +1590,27 @@ impl Step {
                 })
                 .collect();
             same("net", want, &got)?;
+        }
+        if let Some(want) = &e.redstone {
+            let got: Vec<String> = game
+                .block_entities
+                .redstone
+                .outputs()
+                .map(|((_, [x, y, z]), o)| {
+                    let p = o.power;
+                    format!(
+                        "{x} {y} {z} {} {} {} {} {} {}{}",
+                        p[0],
+                        p[1],
+                        p[2],
+                        p[3],
+                        p[4],
+                        p[5],
+                        if o.strong { " strong" } else { "" }
+                    )
+                })
+                .collect();
+            same("redstone", want, &got)?;
         }
         if let Some(want) = &e.entities {
             let mut mobs: Vec<&crate::EntityInfo> = game.entities.iter().collect();

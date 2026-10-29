@@ -23,6 +23,8 @@ pub struct BlockEntities {
     pub energy: crate::energy::Buffers,
     /// Capability `fluids`' tanks on them.
     pub fluids: crate::fluids::Tanks,
+    /// Capability `redstone`'s signals on them.
+    pub redstone: crate::redstone::Redstone,
     /// Capability `items`' inventories on them.
     pub items: crate::items::Inventories,
     /// Capability `multiblocks`' watches on them.
@@ -61,6 +63,7 @@ impl BlockEntities {
             return Self {
                 energy: crate::energy::Buffers::load(world),
                 fluids: crate::fluids::Tanks::load(world),
+                redstone: crate::redstone::Redstone::load(world),
                 items: crate::items::Inventories::load(world),
                 multiblocks: crate::multiblocks::Watches::load(world),
                 saved_data: crate::saved_data::SavedData::load(world),
@@ -80,6 +83,7 @@ impl BlockEntities {
         let mut out = Self {
             energy: crate::energy::Buffers::load(world),
             fluids: crate::fluids::Tanks::load(world),
+            redstone: crate::redstone::Redstone::load(world),
             items: crate::items::Inventories::load(world),
             multiblocks: crate::multiblocks::Watches::load(world),
             saved_data: crate::saved_data::SavedData::load(world),
@@ -101,6 +105,7 @@ impl BlockEntities {
     pub fn save(&mut self, world: &Path) -> std::io::Result<()> {
         self.energy.save(world)?;
         self.fluids.save(world)?;
+        self.redstone.save(world)?;
         self.items.save(world)?;
         self.multiblocks.save(world)?;
         self.saved_data.save(world)?;

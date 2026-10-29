@@ -126,6 +126,17 @@ mod entity_bindings {
         },
     });
 }
+/// Capability `redstone`'s world: its own, so server mods built before it
+/// (no `redstone-events` export) still load.
+mod redstone_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "redstone-host",
+    });
+}
+use redstone_bindings::{RedstoneHost, horizon::mods::redstone};
+/// Block entities one `input-changed` pass tells a mod of.
+const REDSTONE_PER_TICK: usize = 256;
 /// A mob's options at spawn, as the mod gave them.
 pub use entity_bindings::horizon::mods::entities::SpawnOptions as EntitySpawn;
 use entity_bindings::{EntityHost, horizon::mods::entities};
@@ -584,6 +595,15 @@ pub enum Output {
         mod_id: String,
         id: u32,
     },
+    /// `redstone.set-output` (or the block entity's end): what the block at
+    /// a position now gives out, in the order down, up, north, south, west,
+    /// east; all zeros for nothing. The game updates the blocks around it.
+    RedstoneOutput {
+        dimension: String,
+        pos: [i32; 3],
+        power: [u8; 6],
+        strong: bool,
+    },
     /// `recipes.give`: a stack for a creative player.
     Give {
         item: String,
@@ -714,6 +734,8 @@ struct Running {
     net_client: Option<NetClientHost>,
     /// Capability `entities`: the `entity-events` export.
     entities: Option<EntityHost>,
+    /// Capability `redstone`: the `redstone-events` export.
+    redstone: Option<RedstoneHost>,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -993,6 +1015,14 @@ impl Mods {
                     }
                     store.energy.remove(&id, &key);
                     store.fluids.remove(&id, &key);
+                    if store.redstone.remove(&id, &key) {
+                        self.out.push(Output::RedstoneOutput {
+                            dimension: key.0.clone(),
+                            pos: key.1,
+                            power: [0; 6],
+                            strong: false,
+                        });
+                    }
                     let stacks = store.items.remove(&id, &key);
                     if !stacks.is_empty() {
                         self.out.push(Output::DropItems {
@@ -1015,6 +1045,7 @@ impl Mods {
                     None => Ok(()),
                 });
             }
+            self.redstone_pass(i, &id);
             // Every CHECK_EVERY ticks, the mod's watched structures are
             // matched against the world again (capability `multiblocks`).
             if self.entries[i]
@@ -1241,6 +1272,65 @@ impl Mods {
             }
             None => Ok(()),
         });
+    }
+    /// Whether a running mod has capability `redstone`: only then are the
+    /// signals around its blocks worth reading.
+    pub fn wants_redstone(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.redstone.is_some()))
+    }
+    /// The ids of the running mods that hear redstone changes.
+    pub fn redstone_mods(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .filter(|r| r.redstone.is_some())
+            .map(|r| r.store.data().id.clone())
+            .collect()
+    }
+    /// Tells mod `i` (id `id`) of the block entities whose reading changed:
+    /// `input-changed`, at most [`REDSTONE_PER_TICK`] at a time.
+    fn redstone_pass(&mut self, i: usize, id: &str) {
+        if self.entries[i]
+            .run
+            .as_ref()
+            .is_none_or(|r| r.redstone.is_none())
+        {
+            return;
+        }
+        let changed = {
+            let Ok(mut slot) = self.entities.lock() else {
+                return;
+            };
+            let Some(store) = slot.as_mut() else {
+                return;
+            };
+            let keys: Vec<crate::block_entities::Key> =
+                store.of(id).map(|(k, _)| k.clone()).collect();
+            let mut changed = store.redstone.changed_inputs(keys.iter());
+            if changed.len() > REDSTONE_PER_TICK {
+                // The rest wait: forget that they were told.
+                for (key, _) in changed.split_off(REDSTONE_PER_TICK) {
+                    store.redstone.told.remove(&key);
+                }
+            }
+            changed
+        };
+        for ((dimension, [x, y, z]), input) in changed {
+            let input = sides_to_wit(input);
+            self.call(i, FUEL_EVENT, |run| match &run.redstone {
+                Some(h) => h.horizon_mods_redstone_events().call_input_changed(
+                    &mut run.store,
+                    &dimension,
+                    x,
+                    y,
+                    z,
+                    input,
+                ),
+                None => Ok(()),
+            });
+        }
     }
     /// Lends the game's mobs to capability `entities` for the calls until
     /// [`Mods::take_entities`]; with none lent, its functions fail.
@@ -1747,6 +1837,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            redstone::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -1974,6 +2066,13 @@ impl Mods {
             true => EntityHost::new(&mut store, &instance).ok(),
             false => None,
         };
+        // `redstone-events`: a server mod built before the capability has no
+        // export and keeps working, hearing nothing of its signals.
+        let redstone_export = match server && m.capabilities.contains(&crate::Capability::Redstone)
+        {
+            true => RedstoneHost::new(&mut store, &instance).ok(),
+            false => None,
+        };
         // `network-events` / `network-client-events`: a mod built before the
         // capability has no export and keeps working, hearing nothing.
         let wants_net = m.capabilities.contains(&crate::Capability::Network);
@@ -2002,6 +2101,7 @@ impl Mods {
             net_server,
             net_client,
             entities: entity_export,
+            redstone: redstone_export,
         }))
     }
 
@@ -3464,6 +3564,75 @@ impl mod_items::Host for State {
         self.with_store(|s, _| s.items.extract(&key, slot as usize, count, simulate))
             .ok()?
             .map(|s| from_store(&s))
+    }
+}
+fn sides_to_wit(s: crate::redstone::Sides) -> redstone::Sides {
+    redstone::Sides {
+        down: s[0],
+        up: s[1],
+        north: s[2],
+        south: s[3],
+        west: s[4],
+        east: s[5],
+    }
+}
+fn sides_from_wit(s: &redstone::Sides) -> crate::redstone::Sides {
+    [s.down, s.up, s.north, s.south, s.west, s.east]
+}
+impl redstone::Host for State {
+    fn get_input(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<redstone::Sides> {
+        let key = (dimension, [x, y, z]);
+        self.with_store(|s, id| {
+            s.get(id, &key)?;
+            s.redstone.inputs.get(&key).copied()
+        })
+        .ok()?
+        .map(sides_to_wit)
+    }
+    fn set_output(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        output: redstone::Output,
+    ) -> Result<(), String> {
+        let key = (dimension.clone(), [x, y, z]);
+        let output = crate::redstone::Output {
+            power: sides_from_wit(&output.power),
+            strong: output.strong,
+        };
+        let changed = self.with_store(|s, id| {
+            if s.get(id, &key).is_none() {
+                return Err(format!(
+                    "no block entity of this mod at {x} {y} {z} in {dimension}"
+                ));
+            }
+            s.redstone.set_output(id, key, output)
+        })??;
+        if changed {
+            self.out.push(Output::RedstoneOutput {
+                dimension,
+                pos: [x, y, z],
+                power: output.power,
+                strong: output.strong && !output.is_off(),
+            });
+        }
+        Ok(())
+    }
+    fn get_output(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<redstone::Output> {
+        let key = (dimension, [x, y, z]);
+        let o = self.with_store(|s, _| s.redstone.output(&key)).ok()??;
+        Some(redstone::Output {
+            power: sides_to_wit(o.power),
+            strong: o.strong,
+        })
     }
 }
 impl fluids::Host for State {

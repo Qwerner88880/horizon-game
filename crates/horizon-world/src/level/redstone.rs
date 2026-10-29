@@ -44,6 +44,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         direction: Direction,
     ) -> i32 {
         let b = self.b;
+        // A mod's block (no vanilla source) gives what its mod set.
+        let modded = self.level.mod_signal(pos, direction.opposite(), false);
+        if modded > 0 {
+            return modded;
+        }
         if !b.has_flag(state, state_flags::SIGNAL_SOURCE) {
             return 0;
         }
@@ -71,6 +76,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         direction: Direction,
     ) -> i32 {
         let b = self.b;
+        let modded = self.level.mod_signal(pos, direction.opposite(), true);
+        if modded > 0 {
+            return modded;
+        }
         if !b.has_flag(state, state_flags::SIGNAL_SOURCE) {
             return 0;
         }
@@ -148,6 +157,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     pub fn has_signal(&self, pos: BlockPos, direction: Direction) -> bool {
         self.signal(pos, direction) > 0
+    }
+    /// The six signals `pos` reads from its neighbours, down, up, north,
+    /// south, west, east (`getSignal(pos.relative(d), d)`).
+    pub fn neighbor_signals(&self, pos: BlockPos) -> [i32; 6] {
+        SIGNAL_ORDER.map(|direction| self.signal(rel(pos, direction), direction))
     }
     /// `SignalGetter.hasNeighborSignal`.
     pub fn has_neighbor_signal(&self, pos: BlockPos) -> bool {

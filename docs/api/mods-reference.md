@@ -31,6 +31,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `network` | [`network`](#network) | send messages to the other half of the mod, on the server or on your game, and hear its messages |
 | `entities` | [`entities`](#entities) | spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die |
 | `fluids` | [`fluids`](#fluids) | store fluids in its blocks and move fluids between any mod's blocks |
+| `redstone` | [`redstone`](#redstone) | read the redstone signals around its blocks and give redstone signals out of them |
 
 ## World `horizon-mod`
 
@@ -50,8 +51,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
-- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `server-events`
+- Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `log`, `storage`, `players`, `world`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -115,6 +116,13 @@ The game's side of capability `entities`: a world of its own, so server mods bui
 
 - Imports (what the game offers): `players`, `entities`
 - Exports (what the mod provides): `entity-events`
+
+## World `redstone-host`
+
+The game's side of capability `redstone`: a world of its own, so server mods built before it (no `redstone-events` export) still load.
+
+- Imports (what the game offers): `redstone`
+- Exports (what the mod provides): `redstone-events`
 
 ## World `net-server-host`
 
@@ -1377,3 +1385,51 @@ What the server calls in a server mod with capability `entities`. A server mod b
 | `died` | `func(entity: entity)` | A mob of the mod died, whatever killed it: told once, as it starts to fall; its loot drops as vanilla's. |
 | `removed` | `func(entity: entity)` | A mob of the mod is gone: after its death, removed, or despawned. Its last state. |
 | `used` | `func(player: player, entity: entity)` | A player right-clicked a mob of the mod that takes the use. |
+
+## `redstone`
+
+Access: capability `redstone`.
+
+Capability `redstone`, server mods only (manifest `api = "0.3"`, experimental): redstone for the mod's own block entities. The game reads the signals on each face of every block the mod claims, every tick, and tells the mod when they change; and the mod sets the signal each face gives out, which vanilla blocks around it (wire, lamps, repeaters, doors, pistons) read as they read a redstone block or a lever. Signals are 0 to 15. Faces are named as the block's own: `north` is the face towards -Z, `up` the top.
+
+### record `sides`
+
+A signal on each of a block's six faces.
+
+| Field | Type | |
+| --- | --- | --- |
+| `down` | `u8` |  |
+| `up` | `u8` |  |
+| `north` | `u8` |  |
+| `south` | `u8` |  |
+| `west` | `u8` |  |
+| `east` | `u8` |  |
+
+### record `output`
+
+What a block gives out.
+
+| Field | Type | |
+| --- | --- | --- |
+| `power` | `sides` | The strength on each face: what the block touching that face reads. |
+| `strong` | `bool` | Also powers the blocks it touches through, as a lever powers the block it is on (a redstone block does not). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `get-input` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<sides>` | What the mod's own block entity at a position reads from the blocks around it: on each face, the signal the neighbour there gives it (wire, a lever, a redstone block, another mod's block), as of the start of the tick. None for a block that is not the mod's, or not read yet (a block entity is read from the tick after it appears). |
+| `set-output` | `func(dimension: string, x: s32, y: s32, z: s32, output: output) -> result<_, string>` | Sets what the mod's own block entity at a position gives out; all zeros stops it. The blocks around it hear at once (they update as they do for a lever). An error where the mod has no block entity, for a strength over 15, or where another mod drives the signal. The signal is saved with the world and goes with its block entity. |
+| `get-output` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<output>` | What the block at a position gives out, whichever mod drives it: none where it gives nothing. |
+
+## `redstone-events`
+
+Access: exported by the mod: the game calls it.
+
+What the server calls in a server mod with capability `redstone`. A server mod built before it has no such export and keeps working.
+
+### type `sides`
+
+`type sides = sides`
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `input-changed` | `func(dimension: string, x: s32, y: s32, z: s32, input: sides)` | What one of the mod's block entities reads from its faces changed, or was read for the first time (after it was placed, or the world or the mod started), or a neighbouring block changed: at most 256 a tick, the rest the tick after. |

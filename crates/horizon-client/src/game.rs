@@ -625,6 +625,9 @@ struct GameLevel<'w> {
     random_tick_sections: &'w mut horizon_client::random_tick_sections::RandomTickSections,
     /// Players with each chest open (a trapped chest's signal).
     lid_openers: &'w HashMap<(i32, i32, i32), i32>,
+    /// What the mods' blocks give out as redstone signals (capability
+    /// `redstone`), by place.
+    mod_emitters: &'w HashMap<(i32, i32, i32), ([u8; 6], bool)>,
     /// `Level.isClientSide`: a client's copy of the level (a guest of a LAN
     /// world, a window on its server thread, a dedicated server's client).
     client_side: bool,
@@ -883,6 +886,27 @@ impl LevelAccess for GameLevel<'_> {
                 .as_ref()
                 .map_or(0, |_| i32::from(frame.rotation % 8) + 1),
         )
+    }
+    fn mod_signal(&self, pos: BlockPos, side: Direction, strong: bool) -> i32 {
+        if self.mod_emitters.is_empty() {
+            return 0;
+        }
+        let Some((power, is_strong)) = self.mod_emitters.get(&(pos.x, pos.y, pos.z)) else {
+            return 0;
+        };
+        if strong && !is_strong {
+            return 0;
+        }
+        // The order down, up, north, south, west, east.
+        let face = match side {
+            Direction::Down => 0,
+            Direction::Up => 1,
+            Direction::North => 2,
+            Direction::South => 3,
+            Direction::West => 4,
+            Direction::East => 5,
+        };
+        i32::from(power[face])
     }
     fn block_entity_signal(
         &self,
@@ -1907,6 +1931,10 @@ struct Game<'a> {
     /// `ContainerOpenersCounter`: how many players (the host and the guests)
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
+    /// The signals the mods' blocks give out in this level (capability
+    /// `redstone`): the six faces down, up, north, south, west, east, and
+    /// whether the signal is strong.
+    mod_emitters: HashMap<(i32, i32, i32), ([u8; 6], bool)>,
     lan_acting: Option<u32>,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
     lan_acting_name: Option<String>,
@@ -2958,6 +2986,7 @@ impl Game<'_> {
             tickets: self.tickets.levels(),
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
+            mod_emitters: &self.mod_emitters,
             client_side: self.remote.is_some(),
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
@@ -14006,6 +14035,7 @@ impl<'a> Game<'a> {
             kinetic_feedback: HashMap::new(),
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
+            mod_emitters: HashMap::new(),
             lan_acting: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),

@@ -1130,6 +1130,7 @@ mod run {
         fn lend_world_with(&mut self, host: Option<&mut LanHost>) {
             self.lend_mod_entities(true);
             self.read_mod_block_entities();
+            self.refresh_mod_redstone();
             let store = std::mem::take(&mut self.mods.block_entities);
             self.mods.mods.lend_block_entities(store);
             self.lend_player_items(host.as_deref());
@@ -1770,6 +1771,84 @@ mod run {
             }
         }
 
+        /// Capability `redstone`: keeps `mod_emitters` to what this level's
+        /// blocks give out (read again when the world or dimension changes),
+        /// and reads the signals around the mods' blocks once a tick.
+        fn refresh_mod_redstone(&mut self) {
+            let key = (self.world_root.clone(), self.dim.id().to_owned());
+            if self.mods.emitters_key.as_ref() != Some(&key) {
+                let dim = key.1.clone();
+                self.mod_emitters = self
+                    .mods
+                    .block_entities
+                    .redstone
+                    .outputs()
+                    .filter(|((d, _), _)| *d == dim)
+                    .map(|((_, p), o)| ((p[0], p[1], p[2]), (o.power, o.strong)))
+                    .collect();
+                self.mods.emitters_key = Some(key);
+            }
+            if !self.mods.mods.wants_redstone() || self.mods.redstone_fed == self.ticks + 1 {
+                return;
+            }
+            self.mods.redstone_fed = self.ticks + 1;
+            let dim = self.dim.id().to_owned();
+            let mut places = Vec::new();
+            for id in self.mods.mods.redstone_mods() {
+                for ((d, p), _) in self.mods.block_entities.of(&id) {
+                    if *d == dim {
+                        places.push(((d.clone(), *p), *p));
+                    }
+                }
+            }
+            for (key, p) in places {
+                let at = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
+                let read = self.with_level(|b, level, ticks| b.neighbor_signals(level, ticks, at));
+                self.mods
+                    .block_entities
+                    .redstone
+                    .inputs
+                    .insert(key, read.map(|s| s.clamp(0, 15) as u8));
+            }
+        }
+
+        /// A mod's block now gives out `power` (capability `redstone`): the
+        /// blocks around it update, as they do for a lever, and for those it
+        /// powers through when the signal is strong.
+        fn apply_redstone_output(&mut self, pos: [i32; 3], power: [u8; 6], strong: bool) {
+            let key = (pos[0], pos[1], pos[2]);
+            let before = self.mod_emitters.get(&key).copied();
+            if power == [0; 6] {
+                self.mod_emitters.remove(&key);
+            } else {
+                self.mod_emitters.insert(key, (power, strong));
+            }
+            let through = strong || before.is_some_and(|(_, s)| s);
+            let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let mut around = Vec::new();
+            if through {
+                for (dx, dy, dz) in [
+                    (-1, 0, 0),
+                    (1, 0, 0),
+                    (0, -1, 0),
+                    (0, 1, 0),
+                    (0, 0, -1),
+                    (0, 0, 1),
+                ] {
+                    let n = at.offset(dx, dy, dz);
+                    around.push((n, self.world.block(n.x, n.y, n.z)));
+                }
+            }
+            self.with_level(|b, level, ticks| {
+                b.update_neighbors_at(level, ticks, at, b.block(state));
+                for (n, s) in around {
+                    b.update_neighbors_at(level, ticks, n, b.block(s));
+                }
+            });
+            let _ = self.process_level_events();
+        }
+
         /// Marks a mob with its mod's tags in its saved data.
         fn tag_mod_entity(&mut self, id: u32, marks: &[String]) {
             use horizon_world::nbt::{JavaString, Tag};
@@ -2095,6 +2174,16 @@ mod run {
                 line
             };
             match output {
+                Output::RedstoneOutput {
+                    dimension,
+                    pos,
+                    power,
+                    strong,
+                } => {
+                    if dimension == self.dim.id() {
+                        self.apply_redstone_output(pos, power, strong);
+                    }
+                }
                 Output::SpawnEntity { .. }
                 | Output::TeleportEntity { .. }
                 | Output::PushEntity { .. }

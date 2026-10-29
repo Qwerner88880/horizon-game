@@ -19,6 +19,7 @@ pub mod machine_recipes;
 pub mod manifest;
 pub mod modpack;
 pub mod multiblocks;
+pub mod redstone;
 #[cfg(feature = "runtime")]
 mod runtime;
 pub mod saved_data;

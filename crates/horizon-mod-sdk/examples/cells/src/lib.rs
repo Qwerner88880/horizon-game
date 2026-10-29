@@ -31,8 +31,9 @@
 use horizon_mod_sdk::server::{
     Args, Argument, BlockEntity, Entity, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, ModEntity,
     Multiblock, Player, PlayerStack, Registration, ServerMod, Shape, SlotMode, SpawnOptions, Stack,
-    TankSpec, Transform, UsedBlock, block_entities, displays, energy, entities, fluids,
-    item_hooks, items, machine_recipes, menus, multiblocks, network, players, saved_data,
+    RedstoneOutput, Sides, TankSpec, Transform, UsedBlock, block_entities, displays, energy,
+    entities, fluids, item_hooks, items, machine_recipes, menus, multiblocks, network, players,
+    redstone, saved_data,
 };
 use std::collections::BTreeMap;
 
@@ -45,6 +46,16 @@ const CAPACITY: u64 = 100_000;
 const CORE_CHARGE: u64 = 10;
 /// Energy that may flow between two cells side by side each tick.
 const FLOW: u64 = 100;
+
+/// Capability `redstone`: a cell gives out a signal of its charge on every
+/// face, a level for each [`GAUGE`] FE (a gauge for vanilla redstone), and
+/// stops charging while a signal reaches its top face.
+const GAUGE: u64 = 1000;
+
+/// The signal a cell holding `stored` FE gives out.
+fn gauge_level(stored: u64) -> u8 {
+    (stored / GAUGE).min(15) as u8
+}
 
 /// A cell's tank (capability `fluids`): 16 buckets. A cell keeps half a
 /// bucket and passes on what is above it, [`PIPE`] a tick, to the cells
@@ -103,6 +114,9 @@ struct Cells {
     /// The mod's structures, read once in `init` (capability
     /// `multiblocks`): they never change while the mod runs either.
     structures: Vec<multiblocks::Structure>,
+    /// The cells a signal reaches (capability `redstone`), told by
+    /// `redstone_changed`: they don't charge.
+    powered: std::collections::BTreeSet<(String, i32, i32, i32)>,
 }
 
 /// The machine recipe kind this mod's files carry (`data/cells/recipe/`).
@@ -643,7 +657,9 @@ impl ServerMod for Cells {
                 (x, y, z),
                 (
                     stored(d, x, y, z),
-                    if self.cores.contains(&(d.to_owned(), x, y, z)) {
+                    if self.powered.contains(&(d.to_owned(), x, y, z)) {
+                        0
+                    } else if self.cores.contains(&(d.to_owned(), x, y, z)) {
                         CHARGE * CORE_CHARGE
                     } else {
                         CHARGE
@@ -658,6 +674,14 @@ impl ServerMod for Cells {
                 if before.get(&(x, y, z)).map(|b| b.0) != Some(e) {
                     let _ = energy::set_stored(dimension, x, y, z, e);
                 }
+                // The gauge: the host does nothing when it is the same.
+                let _ = redstone::set_output(
+                    dimension,
+                    x,
+                    y,
+                    z,
+                    RedstoneOutput::weak(gauge_level(e)),
+                );
             }
         }
         if tick.is_multiple_of(REFRESH) {
@@ -1138,6 +1162,17 @@ impl ServerMod for Cells {
         ));
     }
 
+    fn redstone_changed(&mut self, dimension: &str, x: i32, y: i32, z: i32, input: &Sides) {
+        let cell = (dimension.to_owned(), x, y, z);
+        // Only the top face counts: the cells beside it give out their own
+        // gauges, which would lock each other.
+        if input.up > 0 {
+            self.powered.insert(cell);
+        } else {
+            self.powered.remove(&cell);
+        }
+    }
+
     fn entity_used(&mut self, player: &Player, entity: &ModEntity) {
         players::tell(
             &player.id,
@@ -1189,6 +1224,15 @@ horizon_mod_sdk::export_server_mod!(Cells);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gauge_rises_a_level_for_each_thousand() {
+        assert_eq!(gauge_level(0), 0);
+        assert_eq!(gauge_level(999), 0);
+        assert_eq!(gauge_level(1000), 1);
+        assert_eq!(gauge_level(15_000), 15);
+        assert_eq!(gauge_level(100_000), 15);
+    }
 
     #[test]
     fn fluids_are_named_the_way_players_type_them() {

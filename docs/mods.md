@@ -685,6 +685,58 @@ vanilla pipes or hoppers seeing the tanks, fluids placed in the world as
 blocks of the mod's own fluid (a content mod can't declare a fluid yet), and
 showing a tank in a menu as a gauge.
 
+#### Redstone (capability `redstone`, experimental)
+
+Redstone for the mod's own blocks, both ways. The game reads the signal on
+each face of every block entity the mod owns, once a tick, and tells the mod
+when it changes; the mod sets the signal each face gives out, and vanilla
+blocks around it (wire, lamps, repeaters, comparators, doors, pistons, note
+blocks) read it as they read a redstone block or a lever. Signals are 0 to
+15 on the faces `down`, `up`, `north` (towards -Z), `south`, `west` and
+`east`; `Sides::all(p)` and `Sides::strongest()` help.
+
+```rust
+use horizon_mod_sdk::server::{RedstoneOutput, Sides, redstone};
+
+// Giving out: a gauge of 7 on every face.
+redstone::set_output(d, x, y, z, RedstoneOutput::weak(7))?;
+
+// Reading, in ServerMod::redstone_changed(dimension, x, y, z, &Sides),
+// or any time with redstone::get_input(d, x, y, z).
+```
+
+- **Reading.** `ServerMod::redstone_changed(dimension, x, y, z, input)` runs
+  for each of the mod's block entities when what it reads on a face changed,
+  when it is read for the first time (a block entity placed, the world or the
+  mod started: so a mod need not poll), and when a neighbouring block
+  changed, at most 256 a tick. `input` is, on each face, the signal the
+  neighbour there gives it: wire, a lever, a redstone block, a repeater
+  facing it, another mod's block. `redstone::get_input` reads the same any
+  time, as of the start of the tick; a block entity is read from the tick
+  after it appears. Only blocks the mod owns can be read.
+- **Giving out.** `redstone::set_output(.., RedstoneOutput { power, strong })`
+  sets what the block gives on each face (all zeros stops it): what the block
+  touching that face reads. `RedstoneOutput::weak(p)` is a redstone block's
+  kind of signal; `strong: true` (`RedstoneOutput::strong(p)`) also powers
+  the blocks it touches through, as a lever powers the block it is on. The
+  blocks around it update when it changes, as they do for a lever. The
+  signal is saved with the world in `data/horizon/redstone.json`, so it
+  stands after a restart before the mod has run, and goes with its block
+  entity. Another mod's block is read-only: `get_output` says what it gives.
+- **The `cells` example** gives out a gauge of its charge (a level for each
+  1000 FE) on every face, so a lamp or wire beside it shows it, and stops
+  charging while a signal reaches its top face (it reads the top only: the
+  cells beside it give out gauges of their own).
+- **Test scripts** put a signal on a block's face with `signals = [{ x, y, z,
+  side = "north", power = 15 }]` (standing until a step changes it) and check
+  what blocks give out with `expect.redstone = ["0 63 0 1 1 1 1 1 1"]` (`x y
+  z down up north south west east`, ` strong` after a strong one).
+
+**Not yet.** Wire and repeaters do not visually connect to a mod's block (a
+redstone block does), comparators read no container of the mod's, no
+quasi-connectivity, and mobs' own pathfinding doesn't see a mod's signal.
+Only the dimension the server is simulating is read and driven.
+
 #### Menus (capability `menus`, experimental)
 
 Chest menus a server mod opens for a player: its own items in the slots,

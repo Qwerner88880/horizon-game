@@ -214,6 +214,7 @@ pub mod server {
     pub use exports::horizon::mods::menu_events::Guest as __MenuGuest;
     pub use exports::horizon::mods::multiblock_events::{Guest as __MultiblockGuest, Multiblock};
     pub use exports::horizon::mods::network_events::Guest as __NetGuest;
+    pub use exports::horizon::mods::redstone_events::Guest as __RedstoneGuest;
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
         ServerCommand,
@@ -229,6 +230,7 @@ pub mod server {
     pub use horizon::mods::menus::{self, MenuItem, MenuSlot, SlotMode};
     pub use horizon::mods::multiblocks;
     pub use horizon::mods::players::{self, GameMode, Player};
+    pub use horizon::mods::redstone::{self, Output as RedstoneOutput, Sides};
     pub use horizon::mods::saved_data;
     pub use horizon::mods::world::{self, BlockChange};
 
@@ -340,6 +342,18 @@ pub mod server {
         /// A player right-clicked a mob that takes the use
         /// ([`SpawnOptions::takes_use`]).
         fn entity_used(&mut self, _player: &Player, _entity: &ModEntity) {}
+        /// What one of the mod's block entities reads from its faces changed,
+        /// was read for the first time, or a neighbouring block changed
+        /// (capability `redstone`): `input` is the signal on each face.
+        fn redstone_changed(
+            &mut self,
+            _dimension: &str,
+            _x: i32,
+            _y: i32,
+            _z: i32,
+            _input: &Sides,
+        ) {
+        }
         /// The same click with the crosshair on a block, after the block's
         /// own vanilla use passed.
         fn item_used_on_block(
@@ -430,6 +444,48 @@ pub mod server {
         pub fn health(mut self, health: f32) -> Self {
             self.health = Some(health);
             self
+        }
+    }
+
+    impl Sides {
+        /// The same signal on every face.
+        pub const fn all(power: u8) -> Self {
+            Self {
+                down: power,
+                up: power,
+                north: power,
+                south: power,
+                west: power,
+                east: power,
+            }
+        }
+        /// The strongest signal on any face.
+        pub fn strongest(&self) -> u8 {
+            [
+                self.down, self.up, self.north, self.south, self.west, self.east,
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+        }
+    }
+
+    impl RedstoneOutput {
+        /// `power` on every face, read by the blocks touching the block (a
+        /// redstone block's kind of signal).
+        pub const fn weak(power: u8) -> Self {
+            Self {
+                power: Sides::all(power),
+                strong: false,
+            }
+        }
+        /// As [`RedstoneOutput::weak`], and powering the blocks it touches
+        /// through as well (a lever's kind of signal).
+        pub const fn strong(power: u8) -> Self {
+            Self {
+                power: Sides::all(power),
+                strong: true,
+            }
         }
     }
 
@@ -755,6 +811,17 @@ macro_rules! export_server_mod {
                 }
                 fn used(player: Player, entity: $crate::server::ModEntity) {
                     with(|m| m.entity_used(&player, &entity))
+                }
+            }
+            impl $crate::server::__RedstoneGuest for Export {
+                fn input_changed(
+                    dimension: String,
+                    x: i32,
+                    y: i32,
+                    z: i32,
+                    input: $crate::server::Sides,
+                ) {
+                    with(|m| m.redstone_changed(&dimension, x, y, z, &input))
                 }
             }
             impl $crate::server::__NetGuest for Export {
